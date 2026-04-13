@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kbparser"
+version = "0.1.0"
+description = "Local document to KB-ready JSON parser."
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.0",
+  "python-docx>=1.1",
+  "openpyxl>=3.1",
+  "pymupdf>=1.24",
+  "pdfplumber>=0.11",
+  "xlrd>=2.0",
+  "pytesseract>=0.3",
+  "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "reportlab>=4.0", "xlwt>=1.3"]
+
+[project.scripts]
+kbparser = "kbparser.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kbparser*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

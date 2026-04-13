@@ -1,4 +1,4 @@
-"""Deterministic JSON writer."""
+"""Deterministic JSON writer with versioned output."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,15 @@ from .model import Document, Output, Record
 
 
 def to_output(doc: Document, records: list[Record] | None = None) -> Output:
-    return Output(document=doc, records=list(records or []))
+    from .cli import SCHEMA_VERSION, RECORDS_VERSION
+    from . import __version__
+    return Output(
+        schema_version=SCHEMA_VERSION,
+        records_version=RECORDS_VERSION,
+        parser_version=__version__,
+        document=doc,
+        records=list(records or []),
+    )
 
 
 def write_json(out: Output, path: Path) -> Path:

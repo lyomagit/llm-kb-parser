@@ -210,5 +210,8 @@ class Record(_Base):
 
 class Output(_Base):
     """Top-level JSON output."""
+    schema_version: str = "1.0"
+    records_version: str = "1.0"
+    parser_version: str = "0.0.0"
     document: Document
     records: list[Record] = Field(default_factory=list)

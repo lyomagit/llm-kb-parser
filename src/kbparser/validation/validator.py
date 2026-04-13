@@ -21,6 +21,20 @@ def validate(doc: Document, records: list[Record] | None = None) -> None:
     asset_ids = {a.id for a in doc.assets}
     all_ids = section_ids | block_ids | table_ids | sheet_ids | asset_ids
 
+    # -- Duplicate ID detection --
+    all_id_list = (
+        [s.id for s in doc.sections]
+        + [b.id for b in doc.blocks]
+        + [t.id for t in doc.tables]
+        + [s.id for s in doc.sheets]
+        + [a.id for a in doc.assets]
+    )
+    seen_ids: set[str] = set()
+    for eid in all_id_list:
+        if eid in seen_ids:
+            errors.append(f"duplicate entity ID: {eid}")
+        seen_ids.add(eid)
+
     # Section parent refs + cycle detection.
     parent_of: dict[str, str | None] = {s.id: s.parent_id for s in doc.sections}
     for s in doc.sections:
@@ -78,7 +92,14 @@ def validate(doc: Document, records: list[Record] | None = None) -> None:
         if r.to_id not in all_ids:
             errors.append(f"relationship: to_id {r.to_id} missing")
 
+    # -- Record-level validation --
+    record_ids_seen: set[str] = set()
     for rec in records:
+        # Duplicate record ID
+        if rec.id in record_ids_seen:
+            errors.append(f"record {rec.id}: duplicate record ID")
+        record_ids_seen.add(rec.id)
+
         if rec.document_id != doc.id:
             errors.append(f"record {rec.id}: document_id mismatch")
         for nid in rec.source_node_ids:
@@ -87,6 +108,17 @@ def validate(doc: Document, records: list[Record] | None = None) -> None:
         for tid in rec.source_table_ids:
             if tid not in table_ids:
                 errors.append(f"record {rec.id}: source_table_id {tid} missing")
+
+        # char_count consistency
+        if rec.text is not None and rec.char_count is not None:
+            if rec.char_count != len(rec.text):
+                errors.append(
+                    f"record {rec.id}: char_count {rec.char_count} != len(text) {len(rec.text)}"
+                )
+
+        # No empty prose chunks
+        if rec.type == "chunk" and not (rec.text or "").strip():
+            errors.append(f"record {rec.id}: chunk record has empty text")
 
     if errors:
         raise ValidationError(errors)

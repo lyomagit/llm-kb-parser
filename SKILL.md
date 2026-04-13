@@ -1,21 +1,31 @@
 ---
 name: llm-kb-parser
-description: Local document to rich JSON parser for LLM knowledge-base ingestion (PDF, DOCX, DOC, XLS, XLSX).
+description: Parse local documents (PDF, DOCX, DOC, XLS, XLSX) into rich JSON for LLM knowledge-base ingestion.
 ---
 
-# llm-kb-parser
+# kbparser
 
-Use this skill to parse local documents into JSON format.
+Parse documents into structured JSON with canonical model + retrieval-oriented records.
 
-## Usage
-
-To parse a file, run the following command from the skill directory or using the absolute path to the virtualenv:
+## Quick Start
 
 ```bash
-/Users/username/Desktop/llm-kb-parser/venv/bin/python -m kbparser.cli parse <path-to-document> --out <output-directory> [--profile fidelity]
+kbparser parse <path> [--out <dir>] [--profile fidelity|balanced|text-lite] [--overwrite] [--lang rus+eng]
 ```
 
-## Available arguments
-- `<path>`: The path to the document you want to parse (e.g., .docx, .pdf).
-- `--out <dir>`: The directory where the parsed JSON will be saved.
-- `--profile fidelity`: (Optional) Use this profile if required.
+## Environment Check
+
+```bash
+kbparser doctor
+```
+
+## Output Structure
+
+- `document`: canonical sections, blocks, tables, pages, sheets, warnings
+- `records`: `chunk`, `reference_chunk`, `diagram_chunk`, `table`, `section_summary_seed`, `sheet_region`
+- Versioned: `schema_version`, `records_version`, `parser_version` in every output
+
+## Optional Dependencies
+
+- **LibreOffice** — required for `.doc` format
+- **Tesseract** — required for OCR on scanned PDFs; set language via `--lang` or `KBPARSER_OCR_LANGS`

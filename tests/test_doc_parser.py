@@ -9,11 +9,19 @@ exercise the full round-trip.
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from kbparser.parsers.base import ParseContext
-from kbparser.parsers.doc import DOCParser, DocConverterMissing, _find_soffice
+from kbparser.parsers.doc import (
+    DOCParser,
+    DocConversionFailed,
+    DocConversionNoOutput,
+    DocConversionTimeout,
+    DocConverterMissing,
+    _find_soffice,
+)
 from kbparser.cli import main
 
 from .fixtures_gen.build_docx import build_basic as build_docx
@@ -65,6 +73,49 @@ def test_doc_ids_deterministic_across_runs(tmp_path: Path):
     assert [s.id for s in a.sections] == [s.id for s in b.sections]
     assert [blk.id for blk in a.blocks] == [blk.id for blk in b.blocks]
     assert [t.id for t in a.tables] == [t.id for t in b.tables]
+
+
+def test_doc_timeout_raises_typed_error(monkeypatch, tmp_path: Path):
+    src = _write_fake_doc(tmp_path / "timeout.doc")
+    monkeypatch.setattr("kbparser.parsers.doc._find_soffice", lambda: "/fake/soffice")
+
+    def slow(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["soffice"], timeout=120)
+
+    monkeypatch.setattr("kbparser.parsers.doc.subprocess.run", slow)
+    with pytest.raises(DocConversionTimeout):
+        DOCParser().parse(ParseContext(path=src, profile="fidelity"))
+
+
+
+def test_doc_missing_output_raises_typed_error(monkeypatch, tmp_path: Path):
+    src = _write_fake_doc(tmp_path / "missing-output.doc")
+    monkeypatch.setattr("kbparser.parsers.doc._find_soffice", lambda: "/fake/soffice")
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr("kbparser.parsers.doc.subprocess.run", lambda *args, **kwargs: Result())
+    with pytest.raises(DocConversionNoOutput):
+        DOCParser().parse(ParseContext(path=src, profile="fidelity"))
+
+
+
+def test_cli_reports_failed_when_doc_conversion_times_out(monkeypatch, tmp_path: Path):
+    src = _write_fake_doc(tmp_path / "cli-timeout.doc")
+    out = tmp_path / "out"
+    monkeypatch.setattr("kbparser.parsers.doc._find_soffice", lambda: "/fake/soffice")
+
+    def slow(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["soffice"], timeout=120)
+
+    monkeypatch.setattr("kbparser.parsers.doc.subprocess.run", slow)
+    rc = main(["parse", str(src), "--out", str(out)])
+    assert rc == 1
+    assert not list(out.glob("*.json"))
+
 
 
 @pytest.mark.skipif(SOFFICE is None, reason="soffice not installed")

@@ -1,4 +1,4 @@
-.PHONY: install test lint typecheck build clean doctor
+.PHONY: install test lint typecheck build clean doctor smoke
 
 install:
 	pip install -e ".[dev,lint]"
@@ -21,3 +21,8 @@ clean:
 
 doctor:
 	kbparser doctor
+
+smoke:
+	python -m kbparser.cli --version
+	python -m kbparser.cli doctor
+	pytest tests/test_repo_smoke.py -q

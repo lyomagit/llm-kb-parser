@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .. import __version__ as _pkg_version
+from ..versioning import PACKAGE_VERSION
 from ..ids import doc_id, sha256_file
 from ..model import Document, Parse, Source, Warning
 
@@ -77,7 +77,7 @@ def build_source_and_parse(
         parser=parser_name,
         parser_version=parser_version,
         started_at=started_at,
-        finished_at=_iso_now(),
+        finished_at=started_at,
         ocr_used=ocr_used,
         conversion_used=conversion_used,
         confidence=confidence,
@@ -87,11 +87,16 @@ def build_source_and_parse(
     return src, parse, doc_id(sha, ctx.profile)
 
 
+def finalize_parse(parse: Parse) -> Parse:
+    parse.finished_at = _iso_now()
+    return parse
+
+
 def empty_document(
     ctx: ParseContext,
     fmt: str,
     parser_name: str,
-    parser_version: str = _pkg_version,
+    parser_version: str = PACKAGE_VERSION,
     *,
     warning_code: str = "parser_stub_used",
     warning_message: str = "Stub parser: no extraction performed (phase 1).",
@@ -104,9 +109,9 @@ def empty_document(
         id=did,
         source=src,
         metadata={},
-        parse=parse,
+        parse=finalize_parse(parse),
         warnings=[Warning(code=warning_code, message=warning_message)],  # type: ignore[arg-type]
     )
 
 
-__all__ = ["Parser", "ParseContext", "build_source_and_parse", "empty_document"]
+__all__ = ["Parser", "ParseContext", "build_source_and_parse", "finalize_parse", "empty_document"]

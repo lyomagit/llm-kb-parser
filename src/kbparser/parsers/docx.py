@@ -15,15 +15,15 @@ from docx import Document as _DocxDocument
 from docx.table import Table as _DocxTable
 from docx.text.paragraph import Paragraph as _DocxParagraph
 
-from .. import __version__ as _pkg_version
 from ..ids import block_id, section_id, table_id
 from ..model import Block, Document, Section, Table, TableCell, Warning
-from .base import ParseContext, build_source_and_parse
+from ..versioning import PACKAGE_VERSION
+from .base import ParseContext, build_source_and_parse, finalize_parse
 
 
 class DOCXParser:
     name = "docx"
-    version = "0.2.0"
+    version = PACKAGE_VERSION
     formats = ("docx",)
 
     def parse(self, ctx: ParseContext) -> Document:
@@ -45,19 +45,16 @@ class DOCXParser:
             elif isinstance(item, _DocxTable):
                 _handle_table(item, state, warnings)
 
-        doc = Document(
+        return Document(
             id=did,
             source=src,
             metadata=metadata,
-            parse=parse,
+            parse=finalize_parse(parse),
             warnings=warnings,
             sections=state.sections,
             blocks=state.blocks,
             tables=state.tables,
         )
-        # annotate parser version from package for traceability
-        doc.parse.parser_version = _pkg_version if self.version == "0.0.0" else self.version
-        return doc
 
 
 # ----- internals -----

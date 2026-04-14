@@ -15,10 +15,7 @@ from .dispatcher import SUPPORTED, UnsupportedFormat, dispatch
 from .export import to_output, write_json
 from .records import build_records
 from .validation import ValidationError, validate
-
-# -- Schema / records contract versions --
-SCHEMA_VERSION = "1.0"
-RECORDS_VERSION = "1.0"
+from .versioning import RECORDS_VERSION, SCHEMA_VERSION
 
 
 def _parse_one(

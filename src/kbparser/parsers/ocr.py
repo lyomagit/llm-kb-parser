@@ -17,6 +17,14 @@ TESSERACT_CANDIDATES = (
 )
 
 
+class OCRTimeout(RuntimeError):
+    pass
+
+
+class OCREngineError(RuntimeError):
+    pass
+
+
 @dataclass
 class OCRResult:
     text: str
@@ -34,33 +42,55 @@ def find_tesseract() -> str | None:
     return None
 
 
-def ocr_page(
-    fitz_page, tesseract_bin: str, dpi: int = 300, lang: str = "eng",
-) -> list[OCRResult]:
-    """Render a pymupdf page, run Tesseract, return per-line results.
+def _image_to_data(pytesseract, img, *, lang: str, timeout_seconds: int):
+    try:
+        return pytesseract.image_to_data(
+            img,
+            output_type=pytesseract.Output.DICT,
+            lang=lang,
+            timeout=timeout_seconds,
+        )
+    except pytesseract.TesseractError:
+        if lang != "eng":
+            return pytesseract.image_to_data(
+                img,
+                output_type=pytesseract.Output.DICT,
+                timeout=timeout_seconds,
+            )
+        raise
 
-    `lang` accepts Tesseract's language codes, optionally joined by '+'
-    (e.g. 'rus+eng'). Unavailable traineddata falls back to 'eng'.
-    """
+
+def ocr_page(
+    fitz_page,
+    tesseract_bin: str,
+    dpi: int = 300,
+    lang: str = "eng",
+    timeout_seconds: int = 20,
+) -> list[OCRResult]:
+    """Render a pymupdf page, run Tesseract, return per-line results."""
     import fitz
+    import io
     import pytesseract
+    from PIL import Image
 
     pytesseract.pytesseract.tesseract_cmd = tesseract_bin
 
     zoom = dpi / 72.0
     matrix = fitz.Matrix(zoom, zoom)
     pix = fitz_page.get_pixmap(matrix=matrix, alpha=False)
-    from PIL import Image
-    import io
     img = Image.open(io.BytesIO(pix.tobytes("png")))
 
     try:
-        data = pytesseract.image_to_data(
-            img, output_type=pytesseract.Output.DICT, lang=lang,
-        )
-    except pytesseract.TesseractError:
-        # Fall back to English if requested language pack is missing.
-        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+        data = _image_to_data(pytesseract, img, lang=lang, timeout_seconds=timeout_seconds)
+    except RuntimeError as exc:
+        message = str(exc)
+        lowered = message.lower()
+        if "time" in lowered and "out" in lowered:
+            raise OCRTimeout(message) from exc
+        raise OCREngineError(message) from exc
+    except pytesseract.TesseractError as exc:
+        raise OCREngineError(str(exc)) from exc
+
     lines: dict[tuple[int, int, int], dict] = {}
     n = len(data["text"])
     for i in range(n):
@@ -83,9 +113,8 @@ def ocr_page(
 
     results: list[OCRResult] = []
     for _, info in sorted(lines.items()):
-        txt = " ".join(info["words"])
         results.append(OCRResult(
-            text=txt,
+            text=" ".join(info["words"]),
             bbox=(info["x0"], info["y0"], info["x1"], info["y1"]),
         ))
     return results

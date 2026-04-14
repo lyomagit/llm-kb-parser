@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from kbparser.parsers.base import ParseContext
-from kbparser.parsers.ocr import find_tesseract
+from kbparser.parsers.ocr import OCREngineError, OCRTimeout, find_tesseract
 from kbparser.parsers.pdf import PDFParser
 from kbparser.validation import validate
 
@@ -76,6 +76,44 @@ def test_scanned_with_empty_ocr_result_emits_skipped_warning(monkeypatch, scanne
         for w in d.warnings
     )
     assert not any(w.code == "ocr_applied_to_pages" for w in d.warnings)
+    validate(d)
+
+
+def test_scanned_with_ocr_timeout_emits_timeout_warning(monkeypatch, scanned_pdf: Path):
+    from kbparser.parsers import pdf as pdf_mod
+
+    monkeypatch.setattr(pdf_mod, "find_tesseract", lambda: "/fake/tesseract")
+
+    def boom(*args, **kwargs):
+        raise OCRTimeout("timed out")
+
+    monkeypatch.setattr(pdf_mod, "ocr_page", boom)
+    d = _parse(scanned_pdf)
+    assert d.parse.ocr_used is False
+    assert any(
+        w.code == "ocr_skipped_timeout"
+        and (w.scope or {}).get("pages_missing_ocr") == [1]
+        for w in d.warnings
+    )
+    validate(d)
+
+
+def test_scanned_with_ocr_error_emits_error_warning(monkeypatch, scanned_pdf: Path):
+    from kbparser.parsers import pdf as pdf_mod
+
+    monkeypatch.setattr(pdf_mod, "find_tesseract", lambda: "/fake/tesseract")
+
+    def boom(*args, **kwargs):
+        raise OCREngineError("ocr engine failed")
+
+    monkeypatch.setattr(pdf_mod, "ocr_page", boom)
+    d = _parse(scanned_pdf)
+    assert d.parse.ocr_used is False
+    assert any(
+        w.code == "ocr_skipped_error"
+        and (w.scope or {}).get("pages_missing_ocr") == [1]
+        for w in d.warnings
+    )
     validate(d)
 
 

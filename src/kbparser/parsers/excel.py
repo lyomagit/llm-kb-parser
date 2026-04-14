@@ -22,12 +22,13 @@ from openpyxl.utils import get_column_letter
 
 from ..ids import region_id, sheet_id, table_id
 from ..model import Document, Sheet, SheetRegion, Table, TableCell, Warning
-from .base import ParseContext, build_source_and_parse
+from ..versioning import PACKAGE_VERSION
+from .base import ParseContext, build_source_and_parse, finalize_parse
 
 
 class ExcelParser:
     name = "excel"
-    version = "0.2.0"
+    version = PACKAGE_VERSION
     formats = ("xlsx", "xls")
 
     def parse(self, ctx: ParseContext) -> Document:
@@ -168,7 +169,7 @@ def _assemble_document(src, parse, did: str, metadata: dict, sheet_inputs: list[
         id=did,
         source=src,
         metadata=metadata,
-        parse=parse,
+        parse=finalize_parse(parse),
         warnings=warnings,
         sheets=sheets,
         tables=tables,

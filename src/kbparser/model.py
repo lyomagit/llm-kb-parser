@@ -31,6 +31,8 @@ WarningCode = Literal[
     "ocr_applied_to_pages",
     "ocr_skipped_missing_binary",
     "ocr_skipped_empty_result",
+    "ocr_skipped_timeout",
+    "ocr_skipped_error",
     "table_structure_uncertain",
     "doc_conversion_lost_styles",
     "formula_not_evaluated",

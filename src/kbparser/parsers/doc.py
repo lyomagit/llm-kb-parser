@@ -18,7 +18,8 @@ from pathlib import Path
 
 from ..ids import block_id, section_id, table_id
 from ..model import Document, Warning
-from .base import ParseContext, build_source_and_parse
+from ..versioning import PACKAGE_VERSION
+from .base import ParseContext, build_source_and_parse, finalize_parse
 from .docx import DOCXParser
 
 
@@ -36,6 +37,18 @@ class DocConverterMissing(RuntimeError):
     pass
 
 
+class DocConversionTimeout(RuntimeError):
+    pass
+
+
+class DocConversionFailed(RuntimeError):
+    pass
+
+
+class DocConversionNoOutput(RuntimeError):
+    pass
+
+
 @dataclass
 class _ConversionResult:
     docx_path: Path
@@ -45,7 +58,7 @@ class _ConversionResult:
 
 class DOCParser:
     name = "doc"
-    version = "0.2.0"
+    version = PACKAGE_VERSION
     formats = ("doc",)
 
     def parse(self, ctx: ParseContext) -> Document:
@@ -75,7 +88,7 @@ class DOCParser:
 
         inner_doc.id = did
         inner_doc.source = src
-        inner_doc.parse = parse
+        inner_doc.parse = finalize_parse(parse)
         inner_doc.parse.conversion_used = True
         inner_doc.parse.conversion_info = {
             "from_format": "doc",
@@ -135,15 +148,22 @@ def _convert_to_docx(bin_path: str, src: Path, out_dir: Path) -> _ConversionResu
         "--outdir", str(out_dir),
         str(src),
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise DocConversionTimeout(f"soffice conversion timed out after {int(exc.timeout)}s") from exc
+    except OSError as exc:
+        raise DocConversionFailed(f"soffice invocation failed: {exc}") from exc
+
     if res.returncode != 0:
-        raise RuntimeError(
-            f"soffice conversion failed ({res.returncode}): "
-            f"{(res.stderr or res.stdout or '').strip()}"
+        raise DocConversionFailed(
+            f"soffice conversion failed ({res.returncode}): {(res.stderr or res.stdout or '').strip()}"
         )
+
     out_docx = out_dir / (src.stem + ".docx")
     if not out_docx.exists():
-        raise RuntimeError(f"soffice produced no output for {src}")
+        raise DocConversionNoOutput(f"soffice produced no output for {src}")
+
     return _ConversionResult(
         docx_path=out_docx,
         converter=Path(bin_path).name,

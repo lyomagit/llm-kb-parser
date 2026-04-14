@@ -37,13 +37,14 @@ from ..model import (
     TableCell,
     Warning,
 )
-from .base import ParseContext, build_source_and_parse
-from .ocr import find_tesseract, ocr_page
+from ..versioning import PACKAGE_VERSION
+from .base import ParseContext, build_source_and_parse, finalize_parse
+from .ocr import OCREngineError, OCRTimeout, find_tesseract, ocr_page
 
 
 class PDFParser:
     name = "pdf"
-    version = "0.2.0"
+    version = PACKAGE_VERSION
     formats = ("pdf",)
 
     def parse(self, ctx: ParseContext) -> Document:
@@ -55,28 +56,43 @@ class PDFParser:
 
         warnings: list[Warning] = []
         raw_pages = _extract_pymupdf(ctx.path, warnings)
-        ocr_applied_pages, ocr_skipped, ocr_skip_reason = _maybe_ocr(
+        ocr = _maybe_ocr(
             ctx.path, raw_pages, profile=ctx.profile, lang=ctx.ocr_langs or "eng",
         )
-        if ocr_applied_pages:
+        if ocr.applied_pages:
             parse.ocr_used = True
             warnings.append(Warning(
                 code="ocr_applied_to_pages",
-                message=f"OCR applied to {len(ocr_applied_pages)} page(s) with weak text layer.",
-                scope={"pages": ocr_applied_pages},
+                message=f"OCR applied to {len(ocr.applied_pages)} page(s) with weak text layer.",
+                scope={"pages": ocr.applied_pages},
             ))
-        if ocr_skipped:
-            missing_binary = ocr_skip_reason == "missing_binary"
+        if ocr.missing_binary_pages:
             warnings.append(Warning(
-                code="ocr_skipped_missing_binary" if missing_binary else "ocr_skipped_empty_result",
+                code="ocr_skipped_missing_binary",
                 message=(
                     "Page(s) lack a text layer but Tesseract is not installed. "
                     "Install via `brew install tesseract` / `apt install tesseract-ocr` "
                     "to recover text."
-                    if missing_binary else
-                    "Tesseract produced no output for page(s); OCR effectively failed."
                 ),
-                scope={"pages_missing_ocr": ocr_skipped},
+                scope={"pages_missing_ocr": ocr.missing_binary_pages},
+            ))
+        if ocr.timeout_pages:
+            warnings.append(Warning(
+                code="ocr_skipped_timeout",
+                message="OCR timed out for page(s) with weak text layer; file parsing continued without OCR text.",
+                scope={"pages_missing_ocr": ocr.timeout_pages},
+            ))
+        if ocr.error_pages:
+            warnings.append(Warning(
+                code="ocr_skipped_error",
+                message="OCR failed for page(s) with weak text layer; file parsing continued without OCR text.",
+                scope={"pages_missing_ocr": ocr.error_pages},
+            ))
+        if ocr.empty_pages:
+            warnings.append(Warning(
+                code="ocr_skipped_empty_result",
+                message="Tesseract produced no output for page(s); OCR effectively failed.",
+                scope={"pages_missing_ocr": ocr.empty_pages},
             ))
 
         pdfplumber_tables = _extract_pdfplumber_tables(ctx.path)
@@ -131,7 +147,7 @@ class PDFParser:
             id=did,
             source=src,
             metadata=_pdf_metadata(ctx.path),
-            parse=parse,
+            parse=finalize_parse(parse),
             warnings=warnings,
             sections=state.sections,
             blocks=state.blocks,
@@ -169,6 +185,15 @@ class _PdfPage:
     blocks: list[_PdfBlock] = field(default_factory=list)
     total_chars: int = 0
     has_images: bool = False
+
+
+@dataclass
+class _OCRSummary:
+    applied_pages: list[int] = field(default_factory=list)
+    missing_binary_pages: list[int] = field(default_factory=list)
+    timeout_pages: list[int] = field(default_factory=list)
+    error_pages: list[int] = field(default_factory=list)
+    empty_pages: list[int] = field(default_factory=list)
 
 
 def _extract_pymupdf(path: Path, warnings: list[Warning]) -> list[_PdfPage]:
@@ -240,39 +265,37 @@ _OCR_TEXT_THRESHOLD = 80
 
 def _maybe_ocr(
     path: Path, pages: list[_PdfPage], *, profile: str, lang: str = "eng",
-) -> tuple[list[int], list[int], str | None]:
-    """Run OCR on pages with weak text layer.
-
-    Returns (pages_ocr_applied, pages_skipped, skip_reason).
-    skip_reason is one of: missing_binary, empty_result, None.
-    """
+) -> _OCRSummary:
     if profile == "text-lite":
-        return [], [], None
+        return _OCRSummary()
 
     candidates = [
         p for p in pages
         if p.total_chars < _OCR_TEXT_THRESHOLD and (p.has_images or p.total_chars == 0)
     ]
     if not candidates:
-        return [], [], None
+        return _OCRSummary()
 
     tesseract = find_tesseract()
     if tesseract is None:
-        return [], [p.number for p in candidates], "missing_binary"
+        return _OCRSummary(missing_binary_pages=[p.number for p in candidates])
 
     import fitz  # pymupdf
-    applied: list[int] = []
-    failed: list[int] = []
+
+    summary = _OCRSummary()
     with fitz.open(str(path)) as doc:
         for p in candidates:
             fitz_page = doc[p.number - 1]
             try:
                 results = ocr_page(fitz_page, tesseract, lang=lang)
-            except Exception:
-                failed.append(p.number)
+            except OCRTimeout:
+                summary.timeout_pages.append(p.number)
+                continue
+            except OCREngineError:
+                summary.error_pages.append(p.number)
                 continue
             if not results:
-                failed.append(p.number)
+                summary.empty_pages.append(p.number)
                 continue
             added_text = False
             for r in results:
@@ -289,11 +312,11 @@ def _maybe_ocr(
                 p.total_chars += len(text)
                 added_text = True
             if not added_text:
-                failed.append(p.number)
+                summary.empty_pages.append(p.number)
                 continue
             p.blocks.sort(key=lambda b: (round(b.bbox[1], 1), round(b.bbox[0], 1)))
-            applied.append(p.number)
-    return applied, failed, "empty_result" if failed else None
+            summary.applied_pages.append(p.number)
+    return summary
 
 
 # ----- header/footer detection -----

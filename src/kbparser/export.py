@@ -4,12 +4,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from . import __version__
 from .model import Document, Output, Record
+from .versioning import RECORDS_VERSION, SCHEMA_VERSION
 
 
 def to_output(doc: Document, records: list[Record] | None = None) -> Output:
-    from .cli import SCHEMA_VERSION, RECORDS_VERSION
-    from . import __version__
     return Output(
         schema_version=SCHEMA_VERSION,
         records_version=RECORDS_VERSION,

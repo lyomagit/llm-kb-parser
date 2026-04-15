@@ -10,6 +10,7 @@ Parse documents into structured JSON with canonical model + retrieval-oriented r
 ## Quick Start
 
 ```bash
+# From activated venv or after pip install -e .
 kbparser parse <path> [--out <dir>] [--profile fidelity|balanced|text-lite] [--overwrite] [--lang rus+eng]
 ```
 
@@ -18,6 +19,12 @@ kbparser parse <path> [--out <dir>] [--profile fidelity|balanced|text-lite] [--o
 ```bash
 kbparser doctor
 ```
+
+## Runtime
+
+- Install: `pip install -e ".[dev]"` from repo root, then `kbparser` is on PATH inside that venv.
+- If using repo-local venv without activation: `./venv/bin/kbparser`
+- Do not assume `kbparser` exists in global PATH outside the project venv.
 
 ## Output Structure
 

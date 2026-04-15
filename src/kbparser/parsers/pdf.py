@@ -54,6 +54,7 @@ class PDFParser:
             ctx, "pdf", self.name, self.version, started_at=started, confidence=0.8,
         )
 
+        metadata = _pdf_metadata(ctx.path)
         warnings: list[Warning] = []
         raw_pages = _extract_pymupdf(ctx.path, warnings)
         ocr = _maybe_ocr(
@@ -103,6 +104,10 @@ class PDFParser:
         _strip_spans_inside_tables(raw_pages, pdfplumber_tables)
 
         state = _BuildState(document_id=did)
+        if raw_pages and not any(b.role == "heading" for p in raw_pages for b in p.blocks):
+            fallback_title = str(metadata.get("title") or ctx.path.stem)
+            state.push(1, fallback_title, raw_pages[0].number)
+
         pages_out: list[Page] = []
         tables_out: list[Table] = []
 
@@ -146,7 +151,7 @@ class PDFParser:
         return Document(
             id=did,
             source=src,
-            metadata=_pdf_metadata(ctx.path),
+            metadata=metadata,
             parse=finalize_parse(parse),
             warnings=warnings,
             sections=state.sections,

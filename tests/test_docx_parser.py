@@ -88,3 +88,37 @@ def test_table_linked_to_materials_section(basic_docx: Path):
     doc = _parse(basic_docx)
     materials = next(s for s in doc.sections if s.title == "Materials")
     assert doc.tables[0].section_id == materials.id
+
+
+def test_root_section_fallback_when_no_heading_styles(tmp_path: Path):
+    """DOCX without Word heading styles should still produce records."""
+    from docx import Document as DocxDoc
+    from kbparser.records import build_records
+
+    # Build a DOCX with only 'Normal' styled paragraphs — no Heading styles.
+    doc = DocxDoc()
+    doc.add_paragraph("Основные положения учетной политики")
+    doc.add_paragraph("I. Общие положения")
+    doc.add_paragraph("Учетная политика формируется в соответствии с ПБУ 1/2008.")
+    doc.add_paragraph("II. Первичные учетные документы")
+    doc.add_paragraph("Бухгалтерский учет ведется автоматизированным способом.")
+    p = tmp_path / "no_headings.docx"
+    doc.save(str(p))
+
+    d = _parse(p)
+
+    # Must have at least one section (fallback root)
+    assert len(d.sections) >= 1
+    root = d.sections[0]
+    assert root.level == 1
+    # All blocks should be assigned to the root section
+    assert all(b.section_id == root.id for b in d.blocks)
+
+    # Records must be non-empty
+    records = build_records(d)
+    assert len(records) > 0
+    assert any(r.type == "chunk" for r in records)
+    # The chunk text should contain actual content
+    chunks = [r for r in records if r.type == "chunk"]
+    combined = " ".join(r.text for r in chunks if r.text)
+    assert "учетной политики" in combined.lower() or "Общие положения" in combined

@@ -7,6 +7,7 @@ import pytest
 
 from kbparser.parsers.base import ParseContext
 from kbparser.parsers.pdf import PDFParser
+from kbparser.records import build_records
 from kbparser.validation import validate
 
 from .fixtures_gen.build_pdf import build_basic
@@ -107,3 +108,19 @@ def test_deterministic_ids(basic_pdf: Path):
     assert [s.id for s in a.sections] == [s.id for s in b.sections]
     assert [blk.id for blk in a.blocks] == [blk.id for blk in b.blocks]
     assert [t.id for t in a.tables] == [t.id for t in b.tables]
+
+
+def test_root_section_fallback_when_no_headings(monkeypatch, basic_pdf: Path):
+    from kbparser.parsers import pdf as pdf_mod
+
+    monkeypatch.setattr(pdf_mod, "_assign_heading_levels", lambda pages, body_size: None)
+    d = _parse(basic_pdf)
+
+    assert len(d.sections) == 1
+    assert d.sections[0].page_start == 1
+    assert d.sections[0].page_end == 2
+    assert all(b.section_id == d.sections[0].id for b in d.blocks if b.type != "heading")
+
+    records = build_records(d)
+    assert len(records) > 0
+    assert any(r.type == "chunk" for r in records)

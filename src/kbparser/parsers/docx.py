@@ -45,6 +45,17 @@ class DOCXParser:
             elif isinstance(item, _DocxTable):
                 _handle_table(item, state, warnings)
 
+        # Fallback: if no heading styles were detected, create a root section
+        # from metadata or filename so blocks aren't orphaned (which causes
+        # the chunker to produce zero records).
+        if not state.sections and state.blocks:
+            fallback_title = metadata.get("title") or ctx.path.stem
+            root = state.push_section(1, str(fallback_title))
+            for blk in state.blocks:
+                if blk.section_id is None:
+                    blk.section_id = root.id
+                    root.block_ids.append(blk.id)
+
         return Document(
             id=did,
             source=src,

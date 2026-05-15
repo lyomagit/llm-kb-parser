@@ -28,9 +28,11 @@ htmlcov/
 .coverage
 .mypy_cache/
 .ruff_cache/
+*.spec
 
 # Binary fixtures (tracked via LFS or regenerated)
 # fixtures/
 
 # Output
 kb-parse-out/
+artifacts/

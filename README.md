@@ -40,6 +40,36 @@ kbparser doctor
 kbparser --version
 ```
 
+## Desktop App
+
+The package also ships a small Tkinter desktop app:
+
+```bash
+kbparser-gui
+```
+
+For distributable builds, install the build extras and run:
+
+```bash
+pip install ".[dev,build]"
+python scripts/build_apps.py
+```
+
+The build writes self-contained PyInstaller artifacts under `dist/apps/`:
+
+- `kbparser` / `kbparser.exe` — command-line parser
+- `KBParser.app` on macOS, or `KBParser.exe` on Windows — desktop app
+
+Set `KBPARSER_DIST_ROOT=/tmp/kbparser-apps` to write the build output outside
+the repository, which is useful on macOS when the checkout lives in a synced
+Desktop/iCloud folder.
+
+GitHub Actions also builds Windows and macOS archives from `.github/workflows/build-apps.yml`.
+
+Note: the bundled apps include Python and Python package dependencies. `.doc`
+conversion still requires LibreOffice on the target machine, and scanned-PDF
+OCR still requires Tesseract language data on the target machine.
+
 ## Output
 
 Each parsed document produces a JSON file containing:

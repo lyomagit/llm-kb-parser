@@ -7,11 +7,13 @@ import queue
 import subprocess
 import sys
 import threading
+import webbrowser
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from . import __version__
 from .cli import main as cli_main
+from .runtime_tools import dependency_download_links, dependency_guidance_text
 
 PROFILES = ("fidelity", "balanced", "text-lite")
 
@@ -100,13 +102,14 @@ class KBParserApp:
 
         actions = ttk.Frame(main)
         actions.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(6, 10))
-        actions.columnconfigure(3, weight=1)
+        actions.columnconfigure(4, weight=1)
         self.parse_button = ttk.Button(actions, text="Parse", command=self.parse)
         self.parse_button.grid(row=0, column=0, padx=(0, 8))
         ttk.Button(actions, text="Doctor", command=self.doctor).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(actions, text="Setup tools", command=self.show_setup_tools).grid(row=0, column=2, padx=(0, 8))
         self.open_button = ttk.Button(actions, text="Open output", command=self.open_output, state="disabled")
-        self.open_button.grid(row=0, column=2, padx=(0, 8))
-        ttk.Label(actions, textvariable=self.status_var).grid(row=0, column=3, sticky="e")
+        self.open_button.grid(row=0, column=3, padx=(0, 8))
+        ttk.Label(actions, textvariable=self.status_var).grid(row=0, column=4, sticky="e")
 
         ttk.Label(main, text="Log").grid(row=6, column=0, sticky="w")
         self.log = tk.Text(main, height=18, wrap="word")
@@ -154,6 +157,37 @@ class KBParserApp:
 
     def doctor(self) -> None:
         self.start_worker(["doctor"], Path.cwd())
+
+    def show_setup_tools(self) -> None:
+        win = self.tk.Toplevel(self.root)
+        win.title("Setup tools")
+        win.minsize(680, 480)
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(0, weight=1)
+
+        body = self.ttk.Frame(win, padding=14)
+        body.grid(row=0, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        text = self.tk.Text(body, wrap="word", height=20)
+        text.insert("1.0", dependency_guidance_text())
+        text.configure(state="disabled")
+        text.grid(row=0, column=0, sticky="nsew")
+        scroll = self.ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        text.configure(yscrollcommand=scroll.set)
+
+        links = self.ttk.Frame(body)
+        links.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        for col, (label, url) in enumerate(dependency_download_links()):
+            links.columnconfigure(col, weight=1)
+            self.ttk.Button(links, text=label, command=lambda u=url: webbrowser.open(u)).grid(
+                row=0,
+                column=col,
+                sticky="ew",
+                padx=(0, 8 if col < 2 else 0),
+            )
 
     def parse(self) -> None:
         from tkinter import messagebox

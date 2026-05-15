@@ -10,7 +10,6 @@ Runtime policy:
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -18,19 +17,10 @@ from pathlib import Path
 
 from ..ids import block_id, section_id, table_id
 from ..model import Document, Warning
+from ..runtime_tools import LIBREOFFICE, dependency_guidance_text, find_tool
 from ..versioning import PACKAGE_VERSION
 from .base import ParseContext, build_source_and_parse, finalize_parse
 from .docx import DOCXParser
-
-
-SOFFICE_BIN_CANDIDATES = (
-    "soffice",
-    "libreoffice",
-    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-    "/usr/bin/libreoffice",
-    "/usr/local/bin/soffice",
-    "/opt/homebrew/bin/soffice",
-)
 
 
 class DocConverterMissing(RuntimeError):
@@ -67,9 +57,8 @@ class DOCParser:
         bin_path = _find_soffice()
         if bin_path is None:
             raise DocConverterMissing(
-                "DOC requires LibreOffice (soffice) on PATH. "
-                "Install via `brew install --cask libreoffice` "
-                "or `apt install libreoffice`, then retry."
+                "DOC requires LibreOffice (soffice). "
+                + dependency_guidance_text()
             )
 
         started = _iso_now()
@@ -115,14 +104,8 @@ class DOCParser:
 # ----- LibreOffice discovery + invocation -----
 
 def _find_soffice() -> str | None:
-    for cand in SOFFICE_BIN_CANDIDATES:
-        resolved = shutil.which(cand)
-        if resolved:
-            return resolved
-        p = Path(cand)
-        if p.is_file():
-            return str(p)
-    return None
+    found = find_tool(LIBREOFFICE)
+    return str(found) if found else None
 
 
 def _soffice_version(bin_path: str) -> str | None:

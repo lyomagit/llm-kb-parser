@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import platform
-import shutil
 import sys
 import time
 from collections import Counter
@@ -16,6 +15,13 @@ from . import __version__
 from .dispatcher import SUPPORTED, UnsupportedFormat, dispatch
 from .export import to_output, write_json
 from .records import build_records
+from .runtime_tools import (
+    LIBREOFFICE,
+    TESSERACT,
+    dependency_guidance_text,
+    missing_tesseract_languages,
+    tool_status,
+)
 from .validation import ValidationError, validate
 from .versioning import RECORDS_VERSION, SCHEMA_VERSION
 
@@ -210,40 +216,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         except ImportError:
             checks.append((f"Package {pkg}", "FAIL", "not installed"))
 
-    # LibreOffice (optional, for .doc)
-    soffice = shutil.which("soffice") or shutil.which("/Applications/LibreOffice.app/Contents/MacOS/soffice")
-    if soffice:
-        import subprocess
-        try:
-            ver = subprocess.check_output([soffice, "--version"], timeout=5, text=True).strip()
-        except Exception:
-            ver = "found but version unknown"
-        checks.append(("LibreOffice", "PASS", f"{soffice} ({ver})"))
-    else:
-        checks.append(("LibreOffice", "WARN", "not found — .doc parsing unavailable"))
+    # External tools are optional for core parsing, but required for .doc and scanned-PDF OCR.
+    libreoffice = tool_status(LIBREOFFICE)
+    checks.append(("LibreOffice", libreoffice.status, libreoffice.detail))
 
-    # Tesseract (optional, for scanned PDF OCR)
-    from .parsers.ocr import find_tesseract
-    tess = find_tesseract()
-    if tess:
-        import subprocess
-        try:
-            ver = subprocess.check_output([tess, "--version"], timeout=5, text=True, stderr=subprocess.STDOUT).split("\n")[0]
-        except Exception:
-            ver = "found but version unknown"
-        try:
-            langs = subprocess.check_output([tess, "--list-langs"], timeout=5, text=True, stderr=subprocess.STDOUT)
-            lang_list = [l.strip() for l in langs.strip().split("\n")[1:] if l.strip()]
-        except Exception:
-            lang_list = []
-        detail = f"{tess} ({ver})"
-        if lang_list:
-            detail += f" langs: {', '.join(lang_list[:10])}"
-            if len(lang_list) > 10:
-                detail += f" +{len(lang_list)-10} more"
-        checks.append(("Tesseract", "PASS", detail))
-    else:
-        checks.append(("Tesseract", "WARN", "not found — OCR unavailable for scanned PDFs"))
+    tesseract = tool_status(TESSERACT)
+    checks.append(("Tesseract", tesseract.status, tesseract.detail))
+    if tesseract.path is not None:
+        missing_langs = missing_tesseract_languages(args.langs)
+        if missing_langs:
+            checks.append((
+                "Tesseract languages",
+                "WARN",
+                f"missing {', '.join(missing_langs)}; install tesseract-lang or add tessdata files",
+            ))
 
     # Temp directory
     import tempfile
@@ -265,6 +251,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  {icon} {name:<{max_name}}  {detail}")
         if status == "FAIL":
             has_fail = True
+
+    if any(status == "WARN" for _, status, _ in checks):
+        print()
+        print(dependency_guidance_text())
 
     return 1 if has_fail else 0
 
@@ -295,6 +285,11 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_parse)
 
     d = sub.add_parser("doctor", help="Check runtime dependencies and environment.")
+    d.add_argument(
+        "--langs",
+        default="rus+eng",
+        help="OCR languages to verify for Tesseract language data. Default: rus+eng.",
+    )
     d.set_defaults(func=cmd_doctor)
 
     return p

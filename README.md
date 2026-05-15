@@ -66,9 +66,10 @@ Desktop/iCloud folder.
 
 GitHub Actions also builds Windows and macOS archives from `.github/workflows/build-apps.yml`.
 
-Note: the bundled apps include Python and Python package dependencies. `.doc`
-conversion still requires LibreOffice on the target machine, and scanned-PDF
-OCR still requires Tesseract language data on the target machine.
+Note: the bundled apps include Python and Python package dependencies. For
+legacy `.doc` and scanned-PDF OCR, the app now detects LibreOffice/Tesseract
+from system paths, explicit env overrides, or a portable `tools/` sidecar next
+to the app.
 
 ## Output
 
@@ -93,10 +94,28 @@ Batch mode additionally writes `manifest.json` with per-file results, timings, r
 
 | Dependency | Required for | Install |
 |------------|-------------|---------|
-| LibreOffice | `.doc` parsing (converted to `.docx`) | `brew install libreoffice` or system package |
-| Tesseract | OCR on scanned PDF pages | `brew install tesseract` + language packs |
+| LibreOffice | `.doc` parsing (converted to `.docx`) | macOS: `brew install --cask libreoffice`; Windows: official 64-bit stable installer |
+| Tesseract | OCR on scanned PDF pages | macOS: `brew install tesseract tesseract-lang`; Windows: UB Mannheim 64-bit installer |
 
-Run `kbparser doctor` to verify these are available.
+Run `kbparser doctor` to verify these are available. The desktop app also has a
+**Setup tools** button with download links and portable sidecar layout.
+
+Robust discovery order:
+
+1. Explicit env overrides: `KBPARSER_LIBREOFFICE`, `KBPARSER_TESSERACT`, and `TESSDATA_PREFIX`.
+2. `KBPARSER_TOOLS_DIR`, for example a shared tools directory.
+3. Portable `tools/` next to the packaged app.
+4. User tools folder:
+   - macOS: `~/Library/Application Support/KBParser/tools`
+   - Windows: `%LOCALAPPDATA%\KBParser\tools`
+5. Standard system locations and `PATH`.
+
+Portable sidecar examples:
+
+- `tools/LibreOffice/program/soffice.exe`
+- `tools/LibreOffice.app/Contents/MacOS/soffice`
+- `tools/Tesseract-OCR/tesseract.exe`
+- `tools/Tesseract-OCR/tessdata/rus.traineddata`
 
 ## Layout
 

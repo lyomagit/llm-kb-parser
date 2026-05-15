@@ -5,17 +5,11 @@ soft failure (warning, no crash) so text-bearing pages still parse cleanly.
 """
 from __future__ import annotations
 
-import shutil
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
-TESSERACT_CANDIDATES = (
-    "tesseract",
-    "/opt/homebrew/bin/tesseract",
-    "/usr/local/bin/tesseract",
-    "/usr/bin/tesseract",
-)
-
+from ..runtime_tools import TESSERACT, find_tessdata_dir, find_tool
 
 class OCRTimeout(RuntimeError):
     pass
@@ -32,14 +26,8 @@ class OCRResult:
 
 
 def find_tesseract() -> str | None:
-    for cand in TESSERACT_CANDIDATES:
-        resolved = shutil.which(cand)
-        if resolved:
-            return resolved
-        p = Path(cand)
-        if p.is_file():
-            return str(p)
-    return None
+    found = find_tool(TESSERACT)
+    return str(found) if found else None
 
 
 def _image_to_data(pytesseract, img, *, lang: str, timeout_seconds: int):
@@ -74,22 +62,30 @@ def ocr_page(
     from PIL import Image
 
     pytesseract.pytesseract.tesseract_cmd = tesseract_bin
-
-    zoom = dpi / 72.0
-    matrix = fitz.Matrix(zoom, zoom)
-    pix = fitz_page.get_pixmap(matrix=matrix, alpha=False)
-    img = Image.open(io.BytesIO(pix.tobytes("png")))
+    old_tessdata = os.environ.get("TESSDATA_PREFIX")
+    tessdata = find_tessdata_dir(Path(tesseract_bin))
+    if tessdata is not None and old_tessdata is None:
+        os.environ["TESSDATA_PREFIX"] = str(tessdata)
 
     try:
-        data = _image_to_data(pytesseract, img, lang=lang, timeout_seconds=timeout_seconds)
-    except RuntimeError as exc:
-        message = str(exc)
-        lowered = message.lower()
-        if "time" in lowered and "out" in lowered:
-            raise OCRTimeout(message) from exc
-        raise OCREngineError(message) from exc
-    except pytesseract.TesseractError as exc:
-        raise OCREngineError(str(exc)) from exc
+        zoom = dpi / 72.0
+        matrix = fitz.Matrix(zoom, zoom)
+        pix = fitz_page.get_pixmap(matrix=matrix, alpha=False)
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+
+        try:
+            data = _image_to_data(pytesseract, img, lang=lang, timeout_seconds=timeout_seconds)
+        except RuntimeError as exc:
+            message = str(exc)
+            lowered = message.lower()
+            if "time" in lowered and "out" in lowered:
+                raise OCRTimeout(message) from exc
+            raise OCREngineError(message) from exc
+        except pytesseract.TesseractError as exc:
+            raise OCREngineError(str(exc)) from exc
+    finally:
+        if tessdata is not None and old_tessdata is None:
+            os.environ.pop("TESSDATA_PREFIX", None)
 
     lines: dict[tuple[int, int, int], dict] = {}
     n = len(data["text"])

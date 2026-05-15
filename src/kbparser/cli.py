@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
 import shutil
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 from . import __version__
@@ -17,9 +19,53 @@ from .records import build_records
 from .validation import ValidationError, validate
 from .versioning import RECORDS_VERSION, SCHEMA_VERSION
 
+_MAX_OUTPUT_BASE_CHARS = 180
+_RESERVED_OUTPUT_CHARS = set('<>:"/\\|?*')
+
+
+def _safe_output_filename(path: Path) -> str:
+    """Return a human-readable JSON filename based on the source filename."""
+    base = "".join(
+        "_" if ch in _RESERVED_OUTPUT_CHARS or ord(ch) < 32 else ch
+        for ch in path.name
+    ).strip(" .")
+    if not base:
+        base = "document"
+    if len(base) > _MAX_OUTPUT_BASE_CHARS:
+        base = base[:_MAX_OUTPUT_BASE_CHARS].rstrip(" ._") or "document"
+    return f"{base}.json"
+
+
+def _stable_path_suffix(path: Path) -> str:
+    return hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:8]
+
+
+def _with_collision_suffix(filename: str, suffix: str) -> str:
+    base = filename[:-5] if filename.endswith(".json") else filename
+    suffix_part = f"__{suffix}"
+    max_base = max(1, _MAX_OUTPUT_BASE_CHARS - len(suffix_part))
+    return f"{base[:max_base].rstrip(' ._')}{suffix_part}.json"
+
+
+def _output_filenames_for_inputs(inputs: list[Path]) -> dict[Path, str]:
+    names = {p: _safe_output_filename(p) for p in inputs}
+    counts = Counter(names.values())
+    used: set[str] = set()
+    out: dict[Path, str] = {}
+
+    for path in inputs:
+        name = names[path]
+        if counts[name] > 1:
+            name = _with_collision_suffix(name, _stable_path_suffix(path))
+        while name in used:
+            name = _with_collision_suffix(name, hashlib.sha256(name.encode("utf-8")).hexdigest()[:8])
+        used.add(name)
+        out[path] = name
+    return out
+
 
 def _parse_one(
-    path: Path, out_dir: Path, profile: str, overwrite: bool, ocr_langs: str | None,
+    path: Path, out_dir: Path, output_filename: str, profile: str, overwrite: bool, ocr_langs: str | None,
 ) -> dict:
     t0 = time.monotonic()
     try:
@@ -42,7 +88,7 @@ def _parse_one(
     except ValidationError as e:
         return {"file": str(path), "status": "failed", "error": f"validation: {e.errors}"}
 
-    out_path = out_dir / f"{doc.id}.json"
+    out_path = out_dir / output_filename
     if out_path.exists() and not overwrite:
         return {
             "file": str(path),
@@ -56,8 +102,6 @@ def _parse_one(
     except OSError as e:
         return {"file": str(path), "status": "failed", "error": f"write: {e}"}
 
-    # Record type counts for manifest
-    from collections import Counter
     type_counts = dict(Counter(r.type for r in records))
 
     return {
@@ -102,8 +146,9 @@ def cmd_parse(args: argparse.Namespace) -> int:
         return 2
 
     ocr_langs = args.lang or os.environ.get("KBPARSER_OCR_LANGS") or None
+    output_names = _output_filenames_for_inputs(inputs)
     results = [
-        _parse_one(p, out_dir, args.profile, args.overwrite, ocr_langs)
+        _parse_one(p, out_dir, output_names[p], args.profile, args.overwrite, ocr_langs)
         for p in inputs
     ]
 

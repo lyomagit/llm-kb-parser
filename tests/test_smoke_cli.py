@@ -69,12 +69,51 @@ def test_cli_parse_single_file(tmp_path: Path, capsys):
     assert rc == 0
     files = list(outdir.glob("*.json"))
     assert len(files) == 1
+    assert files[0].name == "sample.pdf.json"
     payload = json.loads(files[0].read_text())
     assert "document" in payload and "records" in payload
     assert payload["document"]["source"]["format"] == "pdf"
 
 
-def test_cli_deterministic_doc_id(tmp_path: Path):
+def test_cli_output_filename_uses_source_filename(tmp_path: Path):
+    infile = build_basic_pdf(tmp_path / "Путь выздоровления.pdf")
+    outdir = tmp_path / "out"
+
+    rc = main(["parse", str(infile), "--out", str(outdir)])
+
+    assert rc == 0
+    assert (outdir / "Путь выздоровления.pdf.json").exists()
+
+
+def test_cli_output_filename_sanitizes_reserved_chars(tmp_path: Path):
+    infile = build_basic_pdf(tmp_path / "bad:name?.pdf")
+    outdir = tmp_path / "out"
+
+    rc = main(["parse", str(infile), "--out", str(outdir)])
+
+    assert rc == 0
+    assert (outdir / "bad_name_.pdf.json").exists()
+
+
+def test_cli_duplicate_source_names_get_stable_suffixes(tmp_path: Path):
+    indir = tmp_path / "in"
+    one = indir / "one"
+    two = indir / "two"
+    one.mkdir(parents=True)
+    two.mkdir(parents=True)
+    build_basic_pdf(one / "sample.pdf")
+    build_basic_pdf(two / "sample.pdf")
+    outdir = tmp_path / "out"
+
+    rc = main(["parse", str(indir), "--out", str(outdir)])
+
+    assert rc == 0
+    files = sorted(p.name for p in outdir.glob("*.json") if p.name != "manifest.json")
+    assert len(files) == 2
+    assert all(name.startswith("sample.pdf__") and name.endswith(".json") for name in files)
+
+
+def test_cli_deterministic_output_filename(tmp_path: Path):
     infile = build_basic_pdf(tmp_path / "sample.pdf")
     out1 = tmp_path / "o1"
     out2 = tmp_path / "o2"

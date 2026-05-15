@@ -21,6 +21,23 @@ from .versioning import RECORDS_VERSION, SCHEMA_VERSION
 
 _MAX_OUTPUT_BASE_CHARS = 180
 _RESERVED_OUTPUT_CHARS = set('<>:"/\\|?*')
+_STATUS_SYMBOLS = {"PASS": "✓", "WARN": "⚠", "FAIL": "✗"}
+_STATUS_ASCII = {"PASS": "OK", "WARN": "!", "FAIL": "X"}
+
+
+def _stream_supports_status_symbols(stream: object) -> bool:
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        "".join(_STATUS_SYMBOLS.values()).encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return False
+    return True
+
+
+def _status_marker(status: str, stream: object | None = None) -> str:
+    if _stream_supports_status_symbols(stream or sys.stdout):
+        return _STATUS_SYMBOLS[status]
+    return _STATUS_ASCII[status]
 
 
 def _safe_output_filename(path: Path) -> str:
@@ -244,7 +261,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     max_name = max(len(c[0]) for c in checks)
     has_fail = False
     for name, status, detail in checks:
-        icon = {"PASS": "✓", "WARN": "⚠", "FAIL": "✗"}[status]
+        icon = _status_marker(status)
         print(f"  {icon} {name:<{max_name}}  {detail}")
         if status == "FAIL":
             has_fail = True

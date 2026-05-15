@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from kbparser.cli import main
+from kbparser.cli import _status_marker, main
 from kbparser.dispatcher import UnsupportedFormat, detect_format, dispatch
 
 from .fixtures_gen.build_docx import build_basic
@@ -155,3 +155,18 @@ def test_cli_batch_all_fail_writes_manifest_and_returns_1(tmp_path: Path, monkey
     manifest = json.loads((outdir / "manifest.json").read_text())
     assert len(manifest["results"]) == 2
     assert all(r["status"] == "failed" for r in manifest["results"])
+
+
+class _FakeStream:
+    def __init__(self, encoding: str):
+        self.encoding = encoding
+
+
+def test_doctor_status_marker_falls_back_for_legacy_windows_encoding():
+    assert _status_marker("PASS", _FakeStream("cp1252")) == "OK"
+    assert _status_marker("WARN", _FakeStream("cp1252")) == "!"
+    assert _status_marker("FAIL", _FakeStream("cp1252")) == "X"
+
+
+def test_doctor_status_marker_keeps_symbols_for_utf8():
+    assert _status_marker("PASS", _FakeStream("utf-8")) == "✓"

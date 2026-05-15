@@ -270,6 +270,15 @@ def _env_with_tessdata(tesseract_bin: Path | None = None) -> dict[str, str] | No
     return env
 
 
+def _tessdata_candidates_for_bin(tesseract_bin: Path) -> list[Path]:
+    bin_path = tesseract_bin.expanduser()
+    return _dedupe_paths([
+        bin_path.parent / "tessdata",
+        bin_path.parent.parent / "tessdata",
+        bin_path.parent.parent / "share" / "tessdata",
+    ])
+
+
 def tesseract_languages(tesseract_bin: Path | None = None) -> list[str]:
     bin_path = tesseract_bin or find_tool(TESSERACT)
     if bin_path is None:
@@ -295,7 +304,7 @@ def missing_tesseract_languages(required: str) -> list[str]:
     langs = {lang.strip() for lang in required.split("+") if lang.strip()}
     available = set(tesseract_languages())
     if not langs or not available:
-        return []
+        return sorted(langs) if langs else []
     return sorted(lang for lang in langs if lang not in available)
 
 
@@ -316,6 +325,11 @@ def find_tessdata_dir(tesseract_bin: Path | None = None) -> Path | None:
     raw = os.environ.get("TESSDATA_PREFIX")
     if raw and Path(raw).expanduser().is_dir():
         return Path(raw).expanduser()
+    if tesseract_bin is not None:
+        for candidate in _tessdata_candidates_for_bin(tesseract_bin):
+            if candidate.is_dir():
+                return candidate
+        return None
     for root in configured_tool_roots():
         for rel in (
             "tessdata",
@@ -325,13 +339,6 @@ def find_tessdata_dir(tesseract_bin: Path | None = None) -> Path | None:
             "share/tessdata",
         ):
             candidate = root / rel
-            if candidate.is_dir():
-                return candidate
-    if tesseract_bin is not None:
-        for candidate in (
-            tesseract_bin.parent / "tessdata",
-            tesseract_bin.parent.parent / "share" / "tessdata",
-        ):
             if candidate.is_dir():
                 return candidate
     return None
@@ -349,7 +356,7 @@ def install_summary(spec: ToolSpec) -> str:
 def dependency_download_links() -> list[tuple[str, str]]:
     return [
         ("LibreOffice download", LIBREOFFICE.download_url),
-        ("Tesseract Windows installer", TESSERACT.download_url),
+        ("Tesseract download", TESSERACT.download_url),
         ("Tesseract language data", TESSDATA_URL),
     ]
 

@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..runtime_tools import TESSERACT, find_tessdata_dir, find_tool
+from ..runtime_tools import TESSERACT, find_runnable_tool, find_tessdata_dir
 
 class OCRTimeout(RuntimeError):
     pass
@@ -26,7 +26,7 @@ class OCRResult:
 
 
 def find_tesseract() -> str | None:
-    found = find_tool(TESSERACT)
+    found = find_runnable_tool(TESSERACT)
     return str(found) if found else None
 
 

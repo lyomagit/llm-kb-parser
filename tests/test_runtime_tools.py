@@ -3,11 +3,15 @@ import stat
 from pathlib import Path
 
 import kbparser.runtime_tools as runtime_tools
+import kbparser.parsers.doc as doc_parser
+import kbparser.parsers.ocr as ocr_parser
 from kbparser.runtime_tools import (
     LIBREOFFICE,
     TESSERACT,
+    dependency_download_links,
     dependency_guidance_text,
     dependency_status_text,
+    find_tessdata_dir,
     find_tool,
     missing_tesseract_languages,
     tool_status,
@@ -87,6 +91,28 @@ def test_tool_status_warns_for_non_runnable_explicit_file(tmp_path: Path, monkey
     assert status.version is None
 
 
+def test_doc_parser_ignores_non_runnable_libreoffice(tmp_path: Path, monkeypatch):
+    explicit = tmp_path / "soffice"
+    explicit.write_text("", encoding="utf-8")
+    monkeypatch.setenv("KBPARSER_LIBREOFFICE", str(explicit))
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(runtime_tools, "configured_tool_roots", lambda: [])
+    monkeypatch.setattr(runtime_tools, "_common_absolute_candidates", lambda spec: [])
+
+    assert doc_parser._find_soffice() is None
+
+
+def test_ocr_parser_ignores_non_runnable_tesseract(tmp_path: Path, monkeypatch):
+    explicit = tmp_path / "tesseract"
+    explicit.write_text("", encoding="utf-8")
+    monkeypatch.setenv("KBPARSER_TESSERACT", str(explicit))
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(runtime_tools, "configured_tool_roots", lambda: [])
+    monkeypatch.setattr(runtime_tools, "_common_absolute_candidates", lambda spec: [])
+
+    assert ocr_parser.find_tesseract() is None
+
+
 def test_dependency_status_does_not_pass_languages_when_tesseract_is_not_runnable(tmp_path: Path, monkeypatch):
     explicit = tmp_path / "not-runnable-tesseract"
     explicit.write_text("", encoding="utf-8")
@@ -99,6 +125,34 @@ def test_dependency_status_does_not_pass_languages_when_tesseract_is_not_runnabl
 
     assert "Tesseract OCR: WARN" in text
     assert "Tesseract languages: PASS" not in text
+
+
+def test_find_tessdata_prefers_selected_binary_root(tmp_path: Path, monkeypatch):
+    unrelated_root = tmp_path / "portable"
+    unrelated_tessdata = unrelated_root / "Tesseract-OCR" / "tessdata"
+    unrelated_tessdata.mkdir(parents=True)
+    selected_bin = tmp_path / "system" / "bin" / "tesseract"
+    selected_tessdata = tmp_path / "system" / "share" / "tessdata"
+    selected_bin.parent.mkdir(parents=True)
+    selected_tessdata.mkdir(parents=True)
+    selected_bin.write_text("", encoding="utf-8")
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    monkeypatch.setattr(runtime_tools, "configured_tool_roots", lambda: [unrelated_root])
+
+    assert find_tessdata_dir(selected_bin) == selected_tessdata
+
+
+def test_find_tessdata_does_not_use_unrelated_root_for_selected_binary(tmp_path: Path, monkeypatch):
+    unrelated_root = tmp_path / "portable"
+    unrelated_tessdata = unrelated_root / "Tesseract-OCR" / "tessdata"
+    unrelated_tessdata.mkdir(parents=True)
+    selected_bin = tmp_path / "system" / "bin" / "tesseract"
+    selected_bin.parent.mkdir(parents=True)
+    selected_bin.write_text("", encoding="utf-8")
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    monkeypatch.setattr(runtime_tools, "configured_tool_roots", lambda: [unrelated_root])
+
+    assert find_tessdata_dir(selected_bin) is None
 
 
 def test_missing_tesseract_languages_uses_sidecar_tessdata(tmp_path: Path, monkeypatch):
@@ -120,6 +174,30 @@ def test_missing_tesseract_languages_uses_sidecar_tessdata(tmp_path: Path, monke
     monkeypatch.setattr(runtime_tools.subprocess, "run", fake_run)
 
     assert missing_tesseract_languages("rus+eng") == []
+
+
+def test_missing_tesseract_languages_treats_failed_list_as_unchecked(tmp_path: Path, monkeypatch):
+    tesseract = tmp_path / "tesseract"
+    tesseract.write_text("", encoding="utf-8")
+    _make_executable(tesseract)
+    monkeypatch.setenv("KBPARSER_TESSERACT", str(tesseract))
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(runtime_tools, "configured_tool_roots", lambda: [])
+    monkeypatch.setattr(runtime_tools, "_common_absolute_candidates", lambda spec: [])
+
+    def fake_run(args, **kwargs):
+        return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "failed"})()
+
+    monkeypatch.setattr(runtime_tools.subprocess, "run", fake_run)
+
+    assert missing_tesseract_languages("rus+eng") == ["eng", "rus"]
+
+
+def test_dependency_download_links_use_platform_neutral_tesseract_label():
+    labels = [label for label, _url in dependency_download_links()]
+
+    assert "Tesseract download" in labels
+    assert all("Windows installer" not in label for label in labels)
 
 
 def test_dependency_guidance_names_versions_and_bundle_locations():

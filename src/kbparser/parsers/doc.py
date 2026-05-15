@@ -17,7 +17,7 @@ from pathlib import Path
 
 from ..ids import block_id, section_id, table_id
 from ..model import Document, Warning
-from ..runtime_tools import LIBREOFFICE, dependency_guidance_text, find_tool
+from ..runtime_tools import LIBREOFFICE, dependency_guidance_text, find_runnable_tool
 from ..versioning import PACKAGE_VERSION
 from .base import ParseContext, build_source_and_parse, finalize_parse
 from .docx import DOCXParser
@@ -104,7 +104,7 @@ class DOCParser:
 # ----- LibreOffice discovery + invocation -----
 
 def _find_soffice() -> str | None:
-    found = find_tool(LIBREOFFICE)
+    found = find_runnable_tool(LIBREOFFICE)
     return str(found) if found else None
 
 

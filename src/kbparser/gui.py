@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import __version__
 from .cli import main as cli_main
-from .runtime_tools import dependency_download_links, dependency_guidance_text
+from .runtime_tools import app_tools_dir, dependency_download_links, dependency_guidance_text, dependency_status_text
 
 PROFILES = ("fidelity", "balanced", "text-lite")
 
@@ -50,6 +50,22 @@ def open_path(path: Path) -> None:
         subprocess.run(["open", str(path)], check=False)
         return
     subprocess.run(["xdg-open", str(path)], check=False)
+
+
+def open_tools_folder() -> None:
+    folder = app_tools_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    open_path(folder)
+
+
+def setup_tools_text() -> str:
+    return "\n\n".join(
+        [
+            dependency_status_text(),
+            f"User tools folder:\n{app_tools_dir()}",
+            dependency_guidance_text(),
+        ]
+    )
 
 
 class KBParserApp:
@@ -171,7 +187,7 @@ class KBParserApp:
         body.rowconfigure(0, weight=1)
 
         text = self.tk.Text(body, wrap="word", height=20)
-        text.insert("1.0", dependency_guidance_text())
+        text.insert("1.0", setup_tools_text())
         text.configure(state="disabled")
         text.grid(row=0, column=0, sticky="nsew")
         scroll = self.ttk.Scrollbar(body, orient="vertical", command=text.yview)
@@ -180,11 +196,18 @@ class KBParserApp:
 
         links = self.ttk.Frame(body)
         links.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.ttk.Button(links, text="Open tools folder", command=open_tools_folder).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, 8),
+        )
         for col, (label, url) in enumerate(dependency_download_links()):
-            links.columnconfigure(col, weight=1)
+            grid_col = col + 1
+            links.columnconfigure(grid_col, weight=1)
             self.ttk.Button(links, text=label, command=lambda u=url: webbrowser.open(u)).grid(
                 row=0,
-                column=col,
+                column=grid_col,
                 sticky="ew",
                 padx=(0, 8 if col < 2 else 0),
             )

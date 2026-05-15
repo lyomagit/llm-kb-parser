@@ -40,6 +40,7 @@ LIBREOFFICE = ToolSpec(
     env_var="KBPARSER_LIBREOFFICE",
     executable_names=("soffice", "libreoffice", "soffice.exe", "libreoffice.exe"),
     relative_paths=(
+        "Contents/MacOS/soffice",
         "LibreOffice.app/Contents/MacOS/soffice",
         "LibreOffice/program/soffice.exe",
         "LibreOffice/program/soffice",
@@ -217,10 +218,13 @@ def tool_version(path: Path) -> str | None:
             [str(path), "--version"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=10,
             check=False,
         )
     except Exception:
+        return None
+    if out.returncode != 0:
         return None
     text = (out.stdout or out.stderr or "").strip()
     return text.splitlines()[0] if text else None
@@ -237,9 +241,33 @@ def tool_status(spec: ToolSpec) -> ToolStatus:
         )
     version = tool_version(path)
     detail = str(path)
+    if version is None:
+        return ToolStatus(
+            spec=spec,
+            path=path,
+            status="WARN",
+            detail=f"{path} found but did not run with --version; reinstall or choose a working {spec.label}",
+            version=None,
+        )
     if version:
         detail += f" ({version})"
     return ToolStatus(spec=spec, path=path, status="PASS", detail=detail, version=version)
+
+
+def find_runnable_tool(spec: ToolSpec) -> Path | None:
+    status = tool_status(spec)
+    if status.status != "PASS":
+        return None
+    return status.path
+
+
+def _env_with_tessdata(tesseract_bin: Path | None = None) -> dict[str, str] | None:
+    tessdata = find_tessdata_dir(tesseract_bin)
+    if tessdata is None:
+        return None
+    env = os.environ.copy()
+    env["TESSDATA_PREFIX"] = str(tessdata)
+    return env
 
 
 def tesseract_languages(tesseract_bin: Path | None = None) -> list[str]:
@@ -251,10 +279,14 @@ def tesseract_languages(tesseract_bin: Path | None = None) -> list[str]:
             [str(bin_path), "--list-langs"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=10,
             check=False,
+            env=_env_with_tessdata(bin_path),
         )
     except Exception:
+        return []
+    if out.returncode != 0:
         return []
     return [line.strip() for line in (out.stdout or out.stderr or "").splitlines()[1:] if line.strip()]
 
@@ -265,6 +297,19 @@ def missing_tesseract_languages(required: str) -> list[str]:
     if not langs or not available:
         return []
     return sorted(lang for lang in langs if lang not in available)
+
+
+def tesseract_language_status(required: str, tesseract_bin: Path | None = None) -> tuple[str, str]:
+    langs = {lang.strip() for lang in required.split("+") if lang.strip()}
+    if not langs:
+        return ("PASS", "no OCR languages requested")
+    available = set(tesseract_languages(tesseract_bin))
+    if not available:
+        return ("WARN", "could not list installed languages")
+    missing = sorted(lang for lang in langs if lang not in available)
+    if missing:
+        return ("WARN", f"missing {', '.join(missing)}")
+    return ("PASS", required)
 
 
 def find_tessdata_dir(tesseract_bin: Path | None = None) -> Path | None:
@@ -307,6 +352,20 @@ def dependency_download_links() -> list[tuple[str, str]]:
         ("Tesseract Windows installer", TESSERACT.download_url),
         ("Tesseract language data", TESSDATA_URL),
     ]
+
+
+def dependency_status_text(required_langs: str = "rus+eng") -> str:
+    libreoffice = tool_status(LIBREOFFICE)
+    tesseract = tool_status(TESSERACT)
+    lines = [
+        "Current status",
+        f"- {LIBREOFFICE.label}: {libreoffice.status} - {libreoffice.detail}",
+        f"- {TESSERACT.label}: {tesseract.status} - {tesseract.detail}",
+    ]
+    if tesseract.status == "PASS" and tesseract.path is not None:
+        lang_status, lang_detail = tesseract_language_status(required_langs, tesseract.path)
+        lines.append(f"- Tesseract languages: {lang_status} - {lang_detail}")
+    return "\n".join(lines)
 
 
 def dependency_guidance_text() -> str:

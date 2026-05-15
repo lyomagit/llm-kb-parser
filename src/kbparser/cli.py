@@ -19,7 +19,7 @@ from .runtime_tools import (
     LIBREOFFICE,
     TESSERACT,
     dependency_guidance_text,
-    missing_tesseract_languages,
+    tesseract_language_status,
     tool_status,
 )
 from .validation import ValidationError, validate
@@ -222,14 +222,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     tesseract = tool_status(TESSERACT)
     checks.append(("Tesseract", tesseract.status, tesseract.detail))
-    if tesseract.path is not None:
-        missing_langs = missing_tesseract_languages(args.langs)
-        if missing_langs:
-            checks.append((
-                "Tesseract languages",
-                "WARN",
-                f"missing {', '.join(missing_langs)}; install tesseract-lang or add tessdata files",
-            ))
+    if tesseract.status == "PASS" and tesseract.path is not None:
+        lang_status, lang_detail = tesseract_language_status(args.langs, tesseract.path)
+        if lang_status == "WARN":
+            lang_detail = f"{lang_detail}; install tesseract-lang or add tessdata files"
+        checks.append(("Tesseract languages", lang_status, lang_detail))
 
     # Temp directory
     import tempfile

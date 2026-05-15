@@ -71,6 +71,29 @@ legacy `.doc` and scanned-PDF OCR, the app now detects LibreOffice/Tesseract
 from system paths, explicit env overrides, or a portable `tools/` sidecar next
 to the app.
 
+## Android Phase 0
+
+Android is a separate Kotlin/Compose + Chaquopy spike, not a PyInstaller build.
+The Phase 0 app lives under `android/` and embeds Python 3.13 with a narrow
+mobile facade:
+
+- Supported now: `.xls`, `.xlsx` through `kbparser.mobile.facade`.
+- Disabled now: `.doc`, `.docx`, `.pdf`, OCR.
+- Reason: desktop `pydantic-core`, PyMuPDF, LibreOffice, Tkinter, and
+  Tesseract CLI are not Android-safe assumptions.
+
+Build the debug APK with:
+
+```bash
+ANDROID_HOME="$HOME/Library/Android/sdk" \
+ANDROID_SDK_ROOT="$HOME/Library/Android/sdk" \
+./android/gradlew -p android :app:assembleDebug
+```
+
+The generated artifact is `android/app/build/outputs/apk/debug/app-debug.apk`.
+GitHub Actions also has `.github/workflows/android.yml` for the Phase 0 debug
+APK.
+
 ## Output
 
 Each parsed document produces a JSON file containing:

@@ -124,3 +124,47 @@ def test_root_section_fallback_when_no_headings(monkeypatch, basic_pdf: Path):
     records = build_records(d)
     assert len(records) > 0
     assert any(r.type == "chunk" for r in records)
+
+
+def test_pdf_preamble_is_preserved_before_first_heading(tmp_path: Path):
+    import fitz
+
+    path = tmp_path / "preamble.pdf"
+    with fitz.open() as source:
+        page = source.new_page()
+        page.insert_text((50, 100), "Important introductory conditions.", fontsize=11)
+        page.insert_text((50, 150), "Details", fontsize=20)
+        page.insert_text((50, 190), "Detailed explanation. " * 3, fontsize=11)
+        source.save(path)
+    doc = _parse(path)
+    assert all(block.section_id for block in doc.blocks)
+    assert any("introductory conditions" in (r.text or "") for r in build_records(doc))
+
+
+def test_pdf_column_order_between_full_width_blocks(tmp_path: Path):
+    import fitz
+
+    path = tmp_path / "columns.pdf"
+    with fitz.open() as source:
+        page = source.new_page(width=612, height=792)
+        page.insert_text((45, 70), "Spanning heading across both columns of this page", fontsize=18)
+        for x, y, label in [(45, 110, "LEFT_FIRST"), (330, 110, "RIGHT_FIRST"),
+                            (45, 245, "LEFT_SECOND"), (330, 245, "RIGHT_SECOND")]:
+            page.insert_textbox(fitz.Rect(x, y, x + 235, y + 100),
+                                label + " This paragraph belongs to a continuous column. " * 3, fontsize=11)
+        page.insert_text((45, 410), "Final paragraph across both columns. " * 2, fontsize=11)
+        source.save(path)
+    text = "\n".join(b.text or "" for b in _parse(path).blocks)
+    markers = ["Spanning heading", "LEFT_FIRST", "LEFT_SECOND", "RIGHT_FIRST", "RIGHT_SECOND", "Final paragraph"]
+    assert [text.index(marker) for marker in markers] == sorted(text.index(marker) for marker in markers)
+
+
+def test_pdf_cancellation_is_checked_between_pages(basic_pdf: Path):
+    from kbparser.dispatcher import dispatch
+    checks = 0
+    def cancelled():
+        nonlocal checks
+        checks += 1
+        return checks > 1
+    with pytest.raises(Exception, match="Parsing cancelled"):
+        dispatch(basic_pdf, cancelled=cancelled)

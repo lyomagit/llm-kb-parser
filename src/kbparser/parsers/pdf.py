@@ -38,7 +38,7 @@ from ..model import (
     Warning,
 )
 from ..versioning import PACKAGE_VERSION
-from .base import ParseContext, build_source_and_parse, finalize_parse
+from .base import ParseContext, build_source_and_parse, check_cancelled, finalize_parse
 from .ocr import OCREngineError, OCRTimeout, find_tesseract, ocr_page
 
 
@@ -56,9 +56,10 @@ class PDFParser:
 
         metadata = _pdf_metadata(ctx.path)
         warnings: list[Warning] = []
-        raw_pages = _extract_pymupdf(ctx.path, warnings)
+        raw_pages = _extract_pymupdf(ctx.path, warnings, cancelled=ctx.cancelled)
         ocr = _maybe_ocr(
             ctx.path, raw_pages, profile=ctx.profile, lang=ctx.ocr_langs or "eng",
+            cancelled=ctx.cancelled,
         )
         if ocr.applied_pages:
             parse.ocr_used = True
@@ -95,8 +96,14 @@ class PDFParser:
                 message="Tesseract produced no output for page(s); OCR effectively failed.",
                 scope={"pages_missing_ocr": ocr.empty_pages},
             ))
+        if ocr.disabled_pages:
+            warnings.append(Warning(
+                code="ocr_skipped_by_profile",
+                message="Page(s) have no usable text layer; select fidelity or balanced to enable OCR.",
+                scope={"pages_missing_ocr": ocr.disabled_pages},
+            ))
 
-        pdfplumber_tables = _extract_pdfplumber_tables(ctx.path)
+        pdfplumber_tables = _extract_pdfplumber_tables(ctx.path, cancelled=ctx.cancelled)
 
         _classify_header_footer(raw_pages)
         body_size = _dominant_body_size(raw_pages)
@@ -112,23 +119,24 @@ class PDFParser:
         tables_out: list[Table] = []
 
         for page in raw_pages:
+            check_cancelled(ctx.cancelled)
             page_tables = pdfplumber_tables.get(page.number, [])
             page_out = Page(
                 page_number=page.number,
                 width=page.width,
                 height=page.height,
             )
-            # interleave blocks and tables by y-position.
-            items: list[tuple[float, str, Any]] = []
+            items: list[tuple[tuple[float, float, float, float], str, Any]] = []
             for blk in page.blocks:
                 if blk.role == "header_footer":
                     continue
-                items.append((blk.bbox[1], "block", blk))
+                items.append((blk.bbox, "block", blk))
             for ti, tdata in enumerate(page_tables):
-                items.append((tdata["bbox"][1], "table", (ti, tdata)))
-            items.sort(key=lambda x: (x[0], 0 if x[1] == "block" else 1))
+                items.append((tdata["bbox"], "table", (ti, tdata)))
 
-            for _, kind, payload in items:
+            for _, kind, payload in _reading_order(items, page.width):
+                if not state.sections and (kind == "table" or payload.role != "heading"):
+                    state.push(1, str(metadata.get("title") or ctx.path.stem), page.number)
                 if kind == "block":
                     blk = payload  # type: ignore[assignment]
                     _emit_block(state, blk, page_out)
@@ -199,12 +207,14 @@ class _OCRSummary:
     timeout_pages: list[int] = field(default_factory=list)
     error_pages: list[int] = field(default_factory=list)
     empty_pages: list[int] = field(default_factory=list)
+    disabled_pages: list[int] = field(default_factory=list)
 
 
-def _extract_pymupdf(path: Path, warnings: list[Warning]) -> list[_PdfPage]:
+def _extract_pymupdf(path: Path, warnings: list[Warning], *, cancelled=None) -> list[_PdfPage]:
     out: list[_PdfPage] = []
     with fitz.open(str(path)) as doc:
         for i, page in enumerate(doc):
+            check_cancelled(cancelled)
             page_obj = _PdfPage(number=i + 1, width=page.rect.width, height=page.rect.height)
             raw = page.get_text("dict")
             for block in raw.get("blocks", []):
@@ -270,16 +280,16 @@ _OCR_TEXT_THRESHOLD = 80
 
 def _maybe_ocr(
     path: Path, pages: list[_PdfPage], *, profile: str, lang: str = "eng",
+    cancelled=None,
 ) -> _OCRSummary:
-    if profile == "text-lite":
-        return _OCRSummary()
-
     candidates = [
         p for p in pages
         if p.total_chars < _OCR_TEXT_THRESHOLD and (p.has_images or p.total_chars == 0)
     ]
     if not candidates:
         return _OCRSummary()
+    if profile == "text-lite":
+        return _OCRSummary(disabled_pages=[p.number for p in candidates])
 
     tesseract = find_tesseract()
     if tesseract is None:
@@ -290,6 +300,7 @@ def _maybe_ocr(
     summary = _OCRSummary()
     with fitz.open(str(path)) as doc:
         for p in candidates:
+            check_cancelled(cancelled)
             fitz_page = doc[p.number - 1]
             try:
                 results = ocr_page(fitz_page, tesseract, lang=lang)
@@ -365,8 +376,8 @@ def _classify_header_footer(pages: list[_PdfPage]) -> None:
     threshold = max(2, (n_pages + 1) // 2)
     repeating = {k for k, c in occ.items() if c >= threshold}
 
-    for p, zones in zip(pages, block_zones):
-        for b, z in zip(p.blocks, zones):
+    for p, zones in zip(pages, block_zones, strict=True):
+        for b, z in zip(p.blocks, zones, strict=True):
             if z is None:
                 continue
             if (z, _norm(b.text)) in repeating:
@@ -409,10 +420,11 @@ def _assign_heading_levels(pages: list[_PdfPage], body_size: float) -> None:
 
 # ----- tables via pdfplumber -----
 
-def _extract_pdfplumber_tables(path: Path) -> dict[int, list[dict]]:
+def _extract_pdfplumber_tables(path: Path, *, cancelled=None) -> dict[int, list[dict]]:
     out: dict[int, list[dict]] = {}
     with pdfplumber.open(str(path)) as pdf:
         for i, page in enumerate(pdf.pages):
+            check_cancelled(cancelled)
             page_no = i + 1
             entries: list[dict] = []
             try:
@@ -454,6 +466,39 @@ def _strip_spans_inside_tables(
 
 
 # ----- build phase -----
+
+def _reading_order(items: list[tuple], width: float) -> list[tuple]:
+    """Read clear, overlapping columns between full-width content bands."""
+    def row_order(values: list[tuple]) -> list[tuple]:
+        return sorted(values, key=lambda item: (item[0][1], item[0][0]))
+
+    def columns(band: list[tuple]) -> list[tuple]:
+        groups: list[list[tuple]] = []
+        right = 0.0
+        for item in sorted(band, key=lambda value: value[0][0]):
+            if not groups or item[0][0] - right > max(12, width * 0.025):
+                groups.append([])
+            groups[-1].append(item)
+            right = max(right, item[0][2])
+        if len(groups) < 2 or any(len(group) < 2 for group in groups):
+            return row_order(band)
+        # Separate indentation levels are not parallel columns.
+        top = max(min(item[0][1] for item in group) for group in groups)
+        bottom = min(max(item[0][3] for item in group) for group in groups)
+        if top >= bottom:
+            return row_order(band)
+        return [item for group in groups for item in row_order(group)]
+
+    result: list[tuple] = []
+    band: list[tuple] = []
+    for item in row_order(items):
+        if item[0][2] - item[0][0] > width * 0.6:
+            result.extend(columns(band))
+            band = []
+            result.append(item)
+        else:
+            band.append(item)
+    return result + columns(band)
 
 class _BuildState:
     def __init__(self, document_id: str):

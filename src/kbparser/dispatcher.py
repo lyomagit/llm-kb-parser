@@ -1,9 +1,10 @@
 """Format detection + parser dispatch."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
-from .parsers.base import ParseContext, Parser
+from .parsers.base import ParseContext, Parser, check_cancelled
 from .parsers.doc import DOCParser
 from .parsers.docx import DOCXParser
 from .parsers.excel import ExcelParser
@@ -14,6 +15,7 @@ SUPPORTED = {"pdf", "docx", "doc", "xlsx", "xls"}
 _MAGIC_PDF = b"%PDF-"
 _MAGIC_ZIP = b"PK\x03\x04"  # docx/xlsx
 _MAGIC_OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # legacy doc/xls
+_MAGIC_RTF = b"{\\rtf"
 
 
 class UnsupportedFormat(Exception):
@@ -30,8 +32,10 @@ def detect_format(path: Path) -> str:
             raise UnsupportedFormat(f"{path.name}: .pdf but no PDF magic")
         if ext in {"docx", "xlsx"} and not head.startswith(_MAGIC_ZIP):
             raise UnsupportedFormat(f"{path.name}: .{ext} but no ZIP magic")
-        if ext in {"doc", "xls"} and not head.startswith(_MAGIC_OLE):
-            raise UnsupportedFormat(f"{path.name}: .{ext} but no OLE magic")
+        if ext == "doc" and not (head.startswith(_MAGIC_OLE) or head.startswith(_MAGIC_RTF)):
+            raise UnsupportedFormat(f"{path.name}: .doc but no OLE or RTF magic")
+        if ext == "xls" and not head.startswith(_MAGIC_OLE):
+            raise UnsupportedFormat(f"{path.name}: .xls but no OLE magic")
         return ext
     raise UnsupportedFormat(f"{path.name}: unsupported extension '{ext}'")
 
@@ -49,7 +53,9 @@ def get_parser(fmt: str) -> Parser:
     return mapping[fmt]
 
 
-def dispatch(path: Path, profile: str = "fidelity", ocr_langs: str | None = None):
+def dispatch(path: Path, profile: str = "fidelity", ocr_langs: str | None = None, *,
+             cancelled: Callable[[], bool] | None = None):
+    check_cancelled(cancelled)
     fmt = detect_format(path)
     parser = get_parser(fmt)
-    return parser.parse(ParseContext(path=path, profile=profile, ocr_langs=ocr_langs))
+    return parser.parse(ParseContext(path=path, profile=profile, ocr_langs=ocr_langs, cancelled=cancelled))

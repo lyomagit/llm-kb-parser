@@ -13,7 +13,18 @@ from pathlib import Path
 
 from . import __version__
 from .dispatcher import SUPPORTED, UnsupportedFormat, dispatch
-from .export import to_output, write_json
+from .export import (
+    atomic_text,
+    processing_key,
+    read_export_cache,
+    read_export_key,
+    to_output,
+    write_json,
+    write_markdown,
+)
+from .ids import doc_id, sha256_file
+from .model import Warning
+from .parsers.base import ParseCancelled, check_cancelled
 from .records import build_records
 from .runtime_tools import (
     LIBREOFFICE,
@@ -46,8 +57,8 @@ def _status_marker(status: str, stream: object | None = None) -> str:
     return _STATUS_ASCII[status]
 
 
-def _safe_output_filename(path: Path) -> str:
-    """Return a human-readable JSON filename based on the source filename."""
+def _safe_output_stem(path: Path) -> str:
+    """Return a human-readable output stem based on the source filename."""
     base = "".join(
         "_" if ch in _RESERVED_OUTPUT_CHARS or ord(ch) < 32 else ch
         for ch in path.name
@@ -56,7 +67,17 @@ def _safe_output_filename(path: Path) -> str:
         base = "document"
     if len(base) > _MAX_OUTPUT_BASE_CHARS:
         base = base[:_MAX_OUTPUT_BASE_CHARS].rstrip(" ._") or "document"
-    return f"{base}.json"
+    return base
+
+
+def _safe_output_filename(path: Path) -> str:
+    """Return a human-readable JSON filename based on the source filename."""
+    return f"{_safe_output_stem(path)}.json"
+
+
+def _with_output_extension(filename: str, extension: str) -> str:
+    base = filename[:-5] if filename.endswith(".json") else Path(filename).stem
+    return f"{base}{extension}"
 
 
 def _stable_path_suffix(path: Path) -> str:
@@ -88,11 +109,41 @@ def _output_filenames_for_inputs(inputs: list[Path]) -> dict[Path, str]:
 
 
 def _parse_one(
-    path: Path, out_dir: Path, output_filename: str, profile: str, overwrite: bool, ocr_langs: str | None,
+    path: Path,
+    out_dir: Path,
+    output_filename: str,
+    profile: str,
+    overwrite: bool,
+    ocr_langs: str | None,
+    output_format: str,
+    cancelled=None,
 ) -> dict:
     t0 = time.monotonic()
     try:
-        doc = dispatch(path, profile=profile, ocr_langs=ocr_langs)
+        input_sha256 = sha256_file(path)
+        languages = (ocr_langs or "eng") if path.suffix.lower() == ".pdf" else None
+        key = processing_key(path, input_sha256, profile, languages)
+        extensions = {"json": ".json", "markdown": ".md"}
+        kinds = ["json", "markdown"] if output_format == "both" else ["markdown" if output_format == "md" else "json"]
+        paths = {kind: out_dir / _with_output_extension(output_filename, extensions[kind]) for kind in kinds}
+        if not overwrite and any(p.exists() and read_export_key(p) != key for p in paths.values()):
+            output_filename = _with_collision_suffix(output_filename, key[:12])
+            paths = {kind: out_dir / _with_output_extension(output_filename, extensions[kind]) for kind in kinds}
+            if any(p.exists() and read_export_key(p) != key for p in paths.values()):
+                raise OSError("Existing output is invalid or belongs to another parse; choose a new output folder or use --overwrite.")
+        primary = paths.get("json") or paths["markdown"]
+        outputs = {kind: str(p) for kind, p in paths.items()}
+        if not overwrite and all(p.exists() and read_export_key(p) == key for p in paths.values()):
+            _, warning_codes = read_export_cache(primary)
+            return {"file": str(path), "status": "partial" if warning_codes else "skipped",
+                    "doc_id": doc_id(input_sha256, profile), "output": str(primary), "outputs": outputs,
+                    "warning_codes": warning_codes, "warnings": len(warning_codes), "cached": True}
+    except OSError as e:
+        return {"file": str(path), "status": "failed", "error": f"output preflight: {e}"}
+    try:
+        doc = dispatch(path, profile=profile, ocr_langs=ocr_langs, cancelled=cancelled)
+    except ParseCancelled:
+        return {"file": str(path), "status": "cancelled"}
     except UnsupportedFormat as e:
         return {"file": str(path), "status": "failed", "error": f"unsupported: {e}"}
     except Exception as e:  # parser hard failure
@@ -101,27 +152,31 @@ def _parse_one(
 
     t1 = time.monotonic()
     try:
+        check_cancelled(cancelled)
         records = build_records(doc)
+    except ParseCancelled:
+        return {"file": str(path), "status": "cancelled"}
     except Exception as e:
         return {"file": str(path), "status": "failed", "error": f"chunker: {type(e).__name__}: {e}"}
     t_records = time.monotonic() - t1
+    if not records:
+        doc.warnings.append(Warning(code="empty_extraction", message="No searchable content was extracted."))
 
     try:
         validate(doc, records)
     except ValidationError as e:
         return {"file": str(path), "status": "failed", "error": f"validation: {e.errors}"}
 
-    out_path = out_dir / output_filename
-    if out_path.exists() and not overwrite:
-        return {
-            "file": str(path),
-            "status": "skipped",
-            "doc_id": doc.id,
-            "output": str(out_path),
-        }
-
     try:
-        write_json(to_output(doc, records), out_path)
+        check_cancelled(cancelled)
+        if doc.source.sha256 != input_sha256 or sha256_file(path) != input_sha256:
+            raise OSError("Source file changed during parsing; retry after saving the document.")
+        out = to_output(doc, records)
+        for kind, target in paths.items():
+            if overwrite or not target.exists():
+                (write_json if kind == "json" else write_markdown)(out, target)
+    except ParseCancelled:
+        return {"file": str(path), "status": "cancelled"}
     except OSError as e:
         return {"file": str(path), "status": "failed", "error": f"write: {e}"}
 
@@ -131,7 +186,9 @@ def _parse_one(
         "file": str(path),
         "status": "partial" if doc.warnings else "success",
         "doc_id": doc.id,
-        "output": str(out_path),
+        "output": str(primary),
+        "outputs": outputs,
+        "markdown_output": outputs.get("markdown"),
         "parser": doc.parse.parser,
         "warnings": len(doc.warnings),
         "warning_codes": [w.code for w in doc.warnings],
@@ -158,10 +215,7 @@ def _iter_inputs(path: Path) -> list[Path]:
 
 def cmd_parse(args: argparse.Namespace) -> int:
     src = Path(args.path).expanduser().resolve()
-    if args.out:
-        out_dir = Path(args.out).expanduser().resolve()
-    else:
-        out_dir = (src.parent / "kb-parse-out").resolve()
+    out_dir = Path(args.out).expanduser().resolve() if args.out else (src.parent / "kb-parse-out").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     inputs = _iter_inputs(src)
     if not inputs:
@@ -170,10 +224,23 @@ def cmd_parse(args: argparse.Namespace) -> int:
 
     ocr_langs = args.lang or os.environ.get("KBPARSER_OCR_LANGS") or None
     output_names = _output_filenames_for_inputs(inputs)
-    results = [
-        _parse_one(p, out_dir, output_names[p], args.profile, args.overwrite, ocr_langs)
-        for p in inputs
-    ]
+    results = []
+    cancelled = getattr(args, "cancelled", None)
+    progress = getattr(args, "progress", None)
+    for index, path in enumerate(inputs):
+        event = {"file": str(path), "index": index, "total": len(inputs)}
+        if cancelled is not None and cancelled():
+            result = {"file": str(path), "status": "cancelled"}
+        else:
+            if progress is not None:
+                progress({**event, "status": "processing"})
+            print(f"[processing] {path}", flush=True)
+            result = _parse_one(path, out_dir, output_names[path], args.profile, args.overwrite,
+                                ocr_langs, args.output_format, cancelled=cancelled)
+        results.append(result)
+        if progress is not None:
+            progress({**event, **result})
+        print(f"[{result['status']}] {path} -> {_result_destination(result)}", flush=True)
 
     if len(inputs) > 1 or src.is_dir():
         manifest = {
@@ -184,17 +251,24 @@ def cmd_parse(args: argparse.Namespace) -> int:
             "platform": platform.platform(),
             "root": str(src),
             "profile": args.profile,
+            "output_format": args.output_format,
             "results": results,
         }
-        with open(out_dir / "manifest.json", "w", encoding="utf-8") as f:
+        with atomic_text(out_dir / "manifest.json") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2, sort_keys=True)
             f.write("\n")
 
-    for r in results:
-        print(f"[{r['status']}] {r['file']} -> {r.get('output', r.get('error', ''))}")
-
+    if any(result["status"] == "cancelled" for result in results):
+        return 130
     had_fail = any(r["status"] == "failed" for r in results)
     return 1 if had_fail else 0
+
+
+def _result_destination(result: dict) -> str:
+    outputs = result.get("outputs")
+    if isinstance(outputs, dict) and outputs:
+        return ", ".join(str(path) for path in outputs.values())
+    return str(result.get("output", result.get("error", "")))
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -209,7 +283,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # Required packages
     required = ["pydantic", "docx", "openpyxl", "fitz", "pdfplumber", "xlrd", "pytesseract", "PIL"]
     pkg_names = ["pydantic", "python-docx", "openpyxl", "pymupdf", "pdfplumber", "xlrd", "pytesseract", "Pillow"]
-    for mod, pkg in zip(required, pkg_names):
+    for mod, pkg in zip(required, pkg_names, strict=True):
         try:
             __import__(mod)
             checks.append((f"Package {pkg}", "PASS", "importable"))
@@ -275,6 +349,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     q.add_argument("--overwrite", action="store_true")
     q.add_argument(
+        "--format",
+        "--output-format",
+        dest="output_format",
+        choices=["json", "md", "both"],
+        default="both",
+        help="Output format: json, md, or both. Default: both.",
+    )
+    q.add_argument(
         "--lang",
         default=None,
         help="Tesseract OCR language codes (e.g. 'rus+eng'). Env fallback: KBPARSER_OCR_LANGS.",
@@ -292,9 +374,11 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, cancelled=None, progress=None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    args.cancelled = cancelled
+    args.progress = progress
+    return int(args.func(args))
 
 
 if __name__ == "__main__":

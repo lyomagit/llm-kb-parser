@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import platform
 import shutil
 import subprocess
 import sys
@@ -157,7 +156,7 @@ def _common_absolute_candidates(spec: ToolSpec) -> list[Path]:
                 Path("/usr/bin/libreoffice"),
             ]
         if sys.platform == "win32":
-            roots = [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")]
+            roots = [os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)")]
             return [
                 Path(root) / "LibreOffice" / "program" / "soffice.exe"
                 for root in roots
@@ -166,7 +165,7 @@ def _common_absolute_candidates(spec: ToolSpec) -> list[Path]:
         return [Path("/usr/bin/libreoffice"), Path("/usr/bin/soffice"), Path("/usr/local/bin/soffice")]
 
     if sys.platform == "win32":
-        roots = [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")]
+        roots = [os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)")]
         return [
             Path(root) / "Tesseract-OCR" / "tesseract.exe"
             for root in roots

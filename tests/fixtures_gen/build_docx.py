@@ -7,7 +7,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from docx import Document as _DocxDocument
-from docx.oxml.ns import qn
 
 
 def build_basic(path: Path) -> Path:

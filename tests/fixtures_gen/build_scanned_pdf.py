@@ -13,7 +13,6 @@ from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
-
 _TEXT_LINES = [
     "Scanned Document Test",
     "",

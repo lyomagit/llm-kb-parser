@@ -14,10 +14,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.lib import colors
 from reportlab.platypus import (
     BaseDocTemplate,
     Frame,
@@ -25,8 +25,10 @@ from reportlab.platypus import (
     PageTemplate,
     Paragraph,
     Spacer,
-    Table as RLTable,
     TableStyle,
+)
+from reportlab.platypus import (
+    Table as RLTable,
 )
 
 BODY = ParagraphStyle(

@@ -2,9 +2,9 @@ import os
 import stat
 from pathlib import Path
 
-import kbparser.runtime_tools as runtime_tools
 import kbparser.parsers.doc as doc_parser
 import kbparser.parsers.ocr as ocr_parser
+import kbparser.runtime_tools as runtime_tools
 from kbparser.runtime_tools import (
     LIBREOFFICE,
     TESSERACT,

@@ -12,10 +12,10 @@ Strategy:
 from __future__ import annotations
 
 import datetime as _dt
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
 import struct
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -23,7 +23,7 @@ from openpyxl.utils import get_column_letter
 from ..ids import region_id, sheet_id, table_id
 from ..model import Document, Sheet, SheetRegion, Table, TableCell, Warning
 from ..versioning import PACKAGE_VERSION
-from .base import ParseContext, build_source_and_parse, finalize_parse
+from .base import ParseContext, build_source_and_parse, check_cancelled, finalize_parse
 
 
 class ExcelParser:
@@ -46,7 +46,7 @@ class _SheetInput:
     used_range: str | None
     grid_f: dict[tuple[int, int], Any]  # formula view
     grid_c: dict[tuple[int, int], Any]  # cached values view
-    merges: dict[tuple[int, int], "_MergeInfo"]
+    merges: dict[tuple[int, int], _MergeInfo]
 
 
 def _parse_xlsx(ctx: ParseContext, parser_name: str, parser_version: str) -> Document:
@@ -63,14 +63,15 @@ def _parse_xlsx(ctx: ParseContext, parser_name: str, parser_version: str) -> Doc
     metadata = _workbook_metadata(wb_f)
     sheet_inputs: list[_SheetInput] = []
     for idx, name in enumerate(wb_f.sheetnames):
+        check_cancelled(ctx.cancelled)
         ws_f = wb_f[name]
         ws_c = wb_c[name]
         sheet_inputs.append(_SheetInput(
             name=name, index=idx,
             visibility=_visibility(ws_f),
             used_range=_used_range(ws_f),
-            grid_f=_sheet_grid(ws_f),
-            grid_c=_sheet_grid(ws_c),
+            grid_f=_sheet_grid(ws_f, cancelled=ctx.cancelled),
+            grid_c=_sheet_grid(ws_c, cancelled=ctx.cancelled),
             merges=_merge_index(ws_f),
         ))
 
@@ -78,8 +79,9 @@ def _parse_xlsx(ctx: ParseContext, parser_name: str, parser_version: str) -> Doc
 
 
 def _parse_xls(ctx: ParseContext, parser_name: str, parser_version: str) -> Document:
-    from .base import _iso_now  # type: ignore
     import xlrd
+
+    from .base import _iso_now  # type: ignore
 
     started = _iso_now()
     src, parse, did = build_source_and_parse(
@@ -91,6 +93,7 @@ def _parse_xls(ctx: ParseContext, parser_name: str, parser_version: str) -> Docu
 
     sheet_inputs: list[_SheetInput] = []
     for idx, sh in enumerate(book.sheets()):
+        check_cancelled(ctx.cancelled)
         formula_cells = _xls_formula_cells(book, sh)
         sheet_inputs.append(_SheetInput(
             name=sh.name,
@@ -216,7 +219,6 @@ def _xls_formula_cells(book, sh) -> dict[tuple[int, int], _FormulaCellInfo]:
             continue
         rowx, colx = struct.unpack_from("<HH", data, 0)
         result_str = data[6:14]
-        flags = struct.unpack_from("<H", data, 14)[0]
         fmlalen = struct.unpack_from("<H", data, 20)[0]
         try:
             formula = decompile_formula(
@@ -224,6 +226,7 @@ def _xls_formula_cells(book, sh) -> dict[tuple[int, int], _FormulaCellInfo]:
             )
         except Exception:
             continue
+        display_value: Any
         if result_str[6:8] == b"\xFF\xFF":
             first_byte = result_str[0]
             if first_byte == 0:
@@ -271,9 +274,8 @@ def _xls_grid(
             if ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK) and formula_info is None:
                 continue
             v = sh.cell_value(r, c)
-            if v is None or v == "":
-                if formula_info is None:
-                    continue
+            if (v is None or v == "") and formula_info is None:
+                continue
             if formula_info is not None:
                 v = formula_info.formula if formula_mode else formula_info.display_value
             elif ctype == xlrd.XL_CELL_NUMBER and float(v).is_integer():
@@ -292,10 +294,8 @@ def _xls_grid(
             elif ctype == xlrd.XL_CELL_BOOLEAN:
                 v = bool(v)
             elif ctype == xlrd.XL_CELL_ERROR:
-                try:
+                with suppress(Exception):
                     v = xlrd.error_text_from_code.get(int(v), f"#ERR{v}")
-                except Exception:
-                    pass
             grid[(r + 1, c + 1)] = _SimpleCell(row=r + 1, column=c + 1, value=v)
     return grid
 
@@ -346,12 +346,13 @@ def _used_range(ws) -> str | None:
     if not dim or dim in ("A1", "A1:A1") and ws.max_row == 1 and ws.max_column == 1:
         # still return A1 to be explicit
         return dim or None
-    return dim
+    return str(dim)
 
 
-def _sheet_grid(ws) -> dict[tuple[int, int], Any]:
+def _sheet_grid(ws, *, cancelled=None) -> dict[tuple[int, int], Any]:
     grid: dict[tuple[int, int], Any] = {}
     for row in ws.iter_rows():
+        check_cancelled(cancelled)
         for cell in row:
             v = cell.value
             if v is None:

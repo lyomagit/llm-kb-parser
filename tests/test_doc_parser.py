@@ -8,24 +8,22 @@ exercise the full round-trip.
 """
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 
+from kbparser.cli import main
 from kbparser.parsers.base import ParseContext
 from kbparser.parsers.doc import (
-    DOCParser,
-    DocConversionFailed,
     DocConversionNoOutput,
     DocConversionTimeout,
     DocConverterMissing,
+    DOCParser,
     _find_soffice,
 )
-from kbparser.cli import main
 
 from .fixtures_gen.build_docx import build_basic as build_docx
-
 
 SOFFICE = _find_soffice()
 

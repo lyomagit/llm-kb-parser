@@ -72,7 +72,7 @@ class DOCParser:
         with tempfile.TemporaryDirectory(prefix="kbparser-doc-") as tmp:
             tmp_dir = Path(tmp)
             result = _convert_to_docx(bin_path, ctx.path, tmp_dir)
-            inner_ctx = ParseContext(path=result.docx_path, profile=ctx.profile)
+            inner_ctx = ParseContext(path=result.docx_path, profile=ctx.profile, cancelled=ctx.cancelled)
             inner_doc = DOCXParser().parse(inner_ctx)
 
         inner_doc.id = did

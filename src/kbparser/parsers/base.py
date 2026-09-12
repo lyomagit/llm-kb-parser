@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import datetime as _dt
 import mimetypes
-import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from ..versioning import PACKAGE_VERSION
 from ..ids import doc_id, sha256_file
 from ..model import Document, Parse, Source, Warning
+from ..versioning import PACKAGE_VERSION
 
 
 @dataclass
@@ -18,22 +18,33 @@ class ParseContext:
     path: Path
     profile: str
     ocr_langs: str | None = None  # Tesseract language codes, e.g. "rus+eng"
+    cancelled: Callable[[], bool] | None = None
+
+
+class ParseCancelled(Exception):
+    pass
+
+
+def check_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise ParseCancelled("Parsing cancelled")
 
 
 class Parser(Protocol):
     name: str
     version: str
-    formats: tuple[str, ...]
+    @property
+    def formats(self) -> tuple[str, ...]: ...
 
     def parse(self, ctx: ParseContext) -> Document: ...
 
 
 def _iso_now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+    return _dt.datetime.now(_dt.UTC).isoformat()
 
 
 def _iso_mtime(path: Path) -> str:
-    return _dt.datetime.fromtimestamp(path.stat().st_mtime, _dt.timezone.utc).isoformat()
+    return _dt.datetime.fromtimestamp(path.stat().st_mtime, _dt.UTC).isoformat()
 
 
 def _mime(path: Path, fmt: str) -> str:
@@ -79,6 +90,7 @@ def build_source_and_parse(
         started_at=started_at,
         finished_at=started_at,
         ocr_used=ocr_used,
+        ocr_languages=(ctx.ocr_langs or "eng") if fmt == "pdf" else None,
         conversion_used=conversion_used,
         confidence=confidence,
         profile=ctx.profile,  # type: ignore[arg-type]

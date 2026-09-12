@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..runtime_tools import TESSERACT, find_runnable_tool, find_tessdata_dir
 
+
 class OCRTimeout(RuntimeError):
     pass
 
@@ -56,8 +57,9 @@ def ocr_page(
     timeout_seconds: int = 20,
 ) -> list[OCRResult]:
     """Render a pymupdf page, run Tesseract, return per-line results."""
-    import fitz
     import io
+
+    import fitz
     import pytesseract
     from PIL import Image
 

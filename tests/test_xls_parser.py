@@ -4,10 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import xlwt
 
 from kbparser.parsers.base import ParseContext
-from kbparser.parsers.excel import ExcelParser, _SimpleCell, _build_table
+from kbparser.parsers.excel import ExcelParser, _build_table, _SimpleCell
 from kbparser.records import build_records
 from kbparser.validation import validate
 

@@ -9,7 +9,6 @@ Strategy:
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from docx import Document as _DocxDocument
 from docx.table import Table as _DocxTable
@@ -18,7 +17,7 @@ from docx.text.paragraph import Paragraph as _DocxParagraph
 from ..ids import block_id, section_id, table_id
 from ..model import Block, Document, Section, Table, TableCell, Warning
 from ..versioning import PACKAGE_VERSION
-from .base import ParseContext, build_source_and_parse, finalize_parse
+from .base import ParseContext, build_source_and_parse, check_cancelled, finalize_parse
 
 
 class DOCXParser:
@@ -40,21 +39,25 @@ class DOCXParser:
         warnings: list[Warning] = []
 
         for item in _iter_body(docx_obj):
+            check_cancelled(ctx.cancelled)
             if isinstance(item, _DocxParagraph):
                 _handle_paragraph(item, state)
             elif isinstance(item, _DocxTable):
                 _handle_table(item, state, warnings)
 
-        # Fallback: if no heading styles were detected, create a root section
-        # from metadata or filename so blocks aren't orphaned (which causes
-        # the chunker to produce zero records).
-        if not state.sections and state.blocks:
+        # Introductory content also needs a section when headings occur later.
+        orphan_blocks = [blk for blk in state.blocks if blk.section_id is None]
+        if orphan_blocks:
             fallback_title = metadata.get("title") or ctx.path.stem
             root = state.push_section(1, str(fallback_title))
-            for blk in state.blocks:
-                if blk.section_id is None:
-                    blk.section_id = root.id
-                    root.block_ids.append(blk.id)
+            state.sections.remove(root)
+            state.sections.insert(0, root)
+            for blk in orphan_blocks:
+                blk.section_id = root.id
+                root.block_ids.append(blk.id)
+            for table in state.tables:
+                if table.section_id is None:
+                    table.section_id = root.id
 
         return Document(
             id=did,

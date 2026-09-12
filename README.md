@@ -1,8 +1,9 @@
 # kbparser
 
-Local document → rich JSON parser for LLM knowledge-base ingestion.
+Local document → rich JSON and Markdown parser for LLM knowledge-base ingestion.
 
-**Supported formats:** PDF, DOCX, DOC (via LibreOffice), XLS, XLSX.
+**Supported input formats:** PDF, DOCX, DOC (via LibreOffice), XLS, XLSX.
+**Default output:** JSON + Markdown (`.json` for KB pipelines, `.md` for human review).
 
 ## Install
 
@@ -24,6 +25,9 @@ kbparser parse document.pdf
 
 # Parse with options
 kbparser parse document.docx --out ./output --profile fidelity --overwrite
+
+# Markdown-only export
+kbparser parse document.docx --out ./output --format md
 
 # Parse a directory (batch mode)
 kbparser parse ./documents/ --out ./output
@@ -48,6 +52,22 @@ The package also ships a small Tkinter desktop app:
 kbparser-gui
 ```
 
+Version 0.3 adds a Russian interface, per-file results, live logs, cancellation,
+and a Markdown/JSON text preview. Cancellation is checked between PDF pages,
+OCR operations, and document/workbook items; an active external conversion
+finishes before cancellation takes effect.
+
+Exports preserve introductory text and table positions. Existing outputs are
+reused only after checking their content identity and parse settings; name
+collisions receive stable suffixes, and writes use atomic replacement. Derived
+table records contain row spans and repeat headers across row groups. A single
+row larger than the record budget stays intact and is marked `oversized_row`.
+
+macOS builds require Tcl/Tk 8.6.13 or newer. Tk 8.6.12 can ignore input until
+the window moves ([CPython #110218](https://github.com/python/cpython/issues/110218)).
+The build validates its toolkit and writes the actual package version into
+the app bundle. Updating the host Python does not update an already bundled app.
+
 For distributable builds, install the build extras and run:
 
 ```bash
@@ -71,16 +91,19 @@ legacy `.doc` and scanned-PDF OCR, the app now detects LibreOffice/Tesseract
 from system paths, explicit env overrides, or a portable `tools/` sidecar next
 to the app.
 
-## Android Phase 0
+## Android
 
-Android is a separate Kotlin/Compose + Chaquopy spike, not a PyInstaller build.
-The Phase 0 app lives under `android/` and embeds Python 3.13 with a narrow
-mobile facade:
+Android is a separate Kotlin/Compose + Chaquopy app, not a PyInstaller build.
+The app lives under `android/` and embeds Python 3.13 with a narrow mobile
+facade:
 
-- Supported now: `.xls`, `.xlsx` through `kbparser.mobile.facade`.
-- Disabled now: `.doc`, `.docx`, `.pdf`, OCR.
-- Reason: desktop `pydantic-core`, PyMuPDF, LibreOffice, Tkinter, and
-  Tesseract CLI are not Android-safe assumptions.
+- Local now: `.xls`, `.xlsx` through `kbparser.mobile.facade`, rendered as
+  Markdown for the Android UI.
+- Companion path now: `.doc`, `.docx`, `.pdf`, `.rtf` are routed through the
+  external office engine contract `com.lyomagit.kbparser.officeengine`.
+- Still external: OCR should be native Android OCR later, not `pytesseract`.
+- Reason: desktop PyMuPDF, LibreOffice, Tkinter, and Tesseract CLI are not
+  Android-safe assumptions inside the main APK.
 
 Build the debug APK with:
 
@@ -91,8 +114,7 @@ ANDROID_SDK_ROOT="$HOME/Library/Android/sdk" \
 ```
 
 The generated artifact is `android/app/build/outputs/apk/debug/app-debug.apk`.
-GitHub Actions also has `.github/workflows/android.yml` for the Phase 0 debug
-APK.
+GitHub Actions also has `.github/workflows/android.yml` for the debug APK.
 
 ## Output
 

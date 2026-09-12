@@ -1,7 +1,9 @@
 package com.lyomagit.kbparser
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -29,6 +31,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -40,8 +43,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    Phase0Screen(
+                    KBParserScreen(
                         copyUriToCache = ::copyUriToCache,
+                        displayNameForUri = ::displayNameForUri,
+                        mimeTypeForUri = { uri -> contentResolver.getType(uri) },
+                        officeEngineAvailable = { OfficeEngineContract.isAvailable(this) },
                     )
                 }
             }
@@ -49,10 +55,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun copyUriToCache(uri: Uri): File {
-        val name = contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val index = cursor.getColumnIndex("_display_name")
-            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
-        } ?: "selected-document"
+        val name = displayNameForUri(uri)
         val safeName = name.replace(Regex("""[^\w.\- ]"""), "_")
         val out = File(cacheDir, safeName)
         contentResolver.openInputStream(uri).use { input ->
@@ -61,27 +64,70 @@ class MainActivity : ComponentActivity() {
         }
         return out
     }
+
+    private fun displayNameForUri(uri: Uri): String =
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+        } ?: "selected-document"
 }
 
 @Composable
-private fun Phase0Screen(copyUriToCache: (Uri) -> File) {
-    var output by remember { mutableStateOf("Ready. Phase 0 supports XLS and XLSX only.") }
+private fun KBParserScreen(
+    copyUriToCache: (Uri) -> File,
+    displayNameForUri: (Uri) -> String,
+    mimeTypeForUri: (Uri) -> String?,
+    officeEngineAvailable: () -> Boolean,
+) {
+    var output by remember {
+        mutableStateOf(
+            "Ready. XLS/XLSX become Markdown locally; DOC, DOCX, PDF, and RTF use com.lyomagit.kbparser.officeengine when installed."
+        )
+    }
     var busy by remember { mutableStateOf(false) }
+    var pendingOfficeSourceName by remember { mutableStateOf<String?>(null) }
+    var pendingOfficeSourceFormat by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val officeEngineLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        handleOfficeEngineResult(
+            resultData = result.data,
+            sourceName = pendingOfficeSourceName ?: "selected-document",
+            sourceFormat = pendingOfficeSourceFormat ?: "",
+            copyUriToCache = copyUriToCache,
+            scope = scope,
+            onOutput = { output = it },
+            onBusy = { busy = it },
+        )
+    }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
+        val displayName = displayNameForUri(uri)
+        val mimeType = mimeTypeForUri(uri)
         busy = true
-        output = "Parsing selected file..."
-        scope.launch {
-            output = withContext(Dispatchers.IO) {
-                runCatching {
-                    val file = copyUriToCache(uri)
-                    PythonBridge.parseFile(file)
-                }.getOrElse { error ->
-                    """{"status":"failed","message":"${error.message ?: error::class.java.simpleName}"}"""
+        output = "Processing selected file..."
+        if (OfficeEngineContract.isCompanionFormat(mimeType, displayName)) {
+            pendingOfficeSourceName = displayName
+            pendingOfficeSourceFormat = OfficeEngineContract.sourceFormatFor(displayName, mimeType)
+            launchOfficeConversion(
+                uri = uri,
+                displayName = displayName,
+                officeEngineAvailable = officeEngineAvailable,
+                launch = { officeEngineLauncher.launch(it) },
+                onOutput = { output = it },
+                onBusy = { busy = it },
+            )
+        } else {
+            scope.launch {
+                output = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val file = copyUriToCache(uri)
+                        PythonBridge.parseFileMarkdown(file)
+                    }.getOrElse { error ->
+                        officeEngineFailureJson(error.message ?: error::class.java.simpleName)
+                    }
                 }
+                busy = false
             }
-            busy = false
         }
     }
 
@@ -91,21 +137,16 @@ private fun Phase0Screen(copyUriToCache: (Uri) -> File) {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("KBParser Android Spike", style = MaterialTheme.typography.headlineSmall)
-        Text("Phase 0 embeds the Python core with Chaquopy. DOC, DOCX, PDF, and OCR are disabled until their Android backends are proven.")
+        Text("KBParser Android", style = MaterialTheme.typography.headlineSmall)
+        Text("Local Python turns spreadsheets into Markdown. A Collabora-based companion engine handles legacy Office and PDF conversion when installed.")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 enabled = !busy,
                 onClick = {
-                    launcher.launch(
-                        arrayOf(
-                            "application/vnd.ms-excel",
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        )
-                    )
+                    launcher.launch(ALL_INPUT_MIME_TYPES)
                 },
             ) {
-                Text(if (busy) "Working" else "Choose XLS/XLSX")
+                Text(if (busy) "Working" else "Choose document")
             }
             OutlinedButton(
                 enabled = !busy,
@@ -128,3 +169,99 @@ private fun Phase0Screen(copyUriToCache: (Uri) -> File) {
         )
     }
 }
+
+private val DIRECT_PYTHON_MIME_TYPES = arrayOf(
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+
+private val ALL_INPUT_MIME_TYPES = DIRECT_PYTHON_MIME_TYPES + OfficeEngineContract.supportedInputMimeTypes
+
+private fun launchOfficeConversion(
+    uri: Uri,
+    displayName: String,
+    officeEngineAvailable: () -> Boolean,
+    launch: (android.content.Intent) -> Unit,
+    onOutput: (String) -> Unit,
+    onBusy: (Boolean) -> Unit,
+) {
+    if (!officeEngineAvailable()) {
+        onOutput(
+            """{"status":"needs_office_engine","engine":"${OfficeEngineContract.COMPANION_PACKAGE}","message":"Install kbparser office engine to convert ${jsonEscape(displayName)}"}"""
+        )
+        onBusy(false)
+        return
+    }
+
+    val targetFormat = OfficeEngineContract.targetFormatFor(displayName)
+    val intent = OfficeEngineContract.buildConvertIntent(uri, displayName, targetFormat)
+    runCatching {
+        launch(intent)
+        onOutput("""{"status":"converting","engine":"${OfficeEngineContract.COMPANION_PACKAGE}","target_format":"$targetFormat"}""")
+    }.getOrElse { error ->
+        onOutput(officeEngineFailureJson(error.message ?: error::class.java.simpleName))
+        onBusy(false)
+    }
+}
+
+private fun handleOfficeEngineResult(
+    resultData: Intent?,
+    sourceName: String,
+    sourceFormat: String,
+    copyUriToCache: (Uri) -> File,
+    scope: CoroutineScope,
+    onOutput: (String) -> Unit,
+    onBusy: (Boolean) -> Unit,
+) {
+    val resultUri = resultData?.getStringExtra(OfficeEngineContract.EXTRA_RESULT_URI)
+    if (resultUri.isNullOrBlank()) {
+        onOutput(
+            resultData?.getStringExtra(OfficeEngineContract.EXTRA_RESULT_JSON)
+                ?: officeEngineFailureJson("Office engine returned no converted document")
+        )
+        onBusy(false)
+        return
+    }
+
+    onOutput("Parsing converted file...")
+    scope.launch {
+        outputConvertedMarkdown(
+            resultUri = resultUri,
+            sourceName = sourceName,
+            sourceFormat = sourceFormat,
+            copyUriToCache = copyUriToCache,
+            onOutput = onOutput,
+            onBusy = onBusy,
+        )
+    }
+}
+
+private suspend fun outputConvertedMarkdown(
+    resultUri: String,
+    sourceName: String,
+    sourceFormat: String,
+    copyUriToCache: (Uri) -> File,
+    onOutput: (String) -> Unit,
+    onBusy: (Boolean) -> Unit,
+) {
+    val markdown = withContext(Dispatchers.IO) {
+        runCatching {
+            val convertedFile = copyUriToCache(Uri.parse(resultUri))
+            PythonBridge.parseConvertedFileMarkdown(convertedFile, sourceName, sourceFormat)
+        }.getOrElse { error ->
+            officeEngineFailureJson(error.message ?: error::class.java.simpleName)
+        }
+    }
+    onOutput(markdown)
+    onBusy(false)
+}
+
+private fun officeEngineFailureJson(message: String): String =
+    """{"status":"failed","message":"${jsonEscape(message)}"}"""
+
+private fun jsonEscape(value: String): String =
+    value
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")

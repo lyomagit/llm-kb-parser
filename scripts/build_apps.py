@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import platform
+import plistlib
+import runpy
 import shutil
 import subprocess
 import sys
@@ -72,7 +74,29 @@ def build_gui() -> None:
         args.append("--onefile")
     args.append(str(ROOT / "packaging" / "entrypoints" / "kbparser_gui.py"))
     run(args)
+    if sys.platform == "darwin":
+        plist = GUI_DIST / "KBParser.app" / "Contents" / "Info.plist"
+        with plist.open("rb") as stream:
+            info = plistlib.load(stream)
+        version = runpy.run_path(str(ROOT / "src" / "kbparser" / "versioning.py"))["PACKAGE_VERSION"]
+        info.update(CFBundleShortVersionString=version, CFBundleVersion=version)
+        with plist.open("wb") as stream:
+            plistlib.dump(info, stream)
     sign_macos_app()
+
+
+def check_gui_runtime() -> None:
+    import tkinter
+
+    root = tkinter.Tk()
+    try:
+        root.withdraw()
+        tk_version = str(root.tk.call("package", "present", "Tk"))
+    finally:
+        root.destroy()
+    print(f"Build runtime: Python {platform.python_version()}, Tk {tk_version}", flush=True)
+    if sys.platform == "darwin" and tuple(int(part) for part in tk_version.split(".")) < (8, 6, 13):
+        raise SystemExit("macOS builds require Tk >= 8.6.13: older versions can ignore mouse events (CPython #110218).")
 
 
 def sign_macos_app() -> None:
@@ -122,6 +146,7 @@ def smoke_cli() -> None:
 
 
 def main() -> int:
+    check_gui_runtime()
     shutil.rmtree(DIST_ROOT, ignore_errors=True)
     shutil.rmtree(WORK_ROOT, ignore_errors=True)
     build_cli()

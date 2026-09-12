@@ -110,11 +110,10 @@ def validate(doc: Document, records: list[Record] | None = None) -> None:
                 errors.append(f"record {rec.id}: source_table_id {tid} missing")
 
         # char_count consistency
-        if rec.text is not None and rec.char_count is not None:
-            if rec.char_count != len(rec.text):
-                errors.append(
-                    f"record {rec.id}: char_count {rec.char_count} != len(text) {len(rec.text)}"
-                )
+        if rec.text is not None and rec.char_count is not None and rec.char_count != len(rec.text):
+            errors.append(
+                f"record {rec.id}: char_count {rec.char_count} != len(text) {len(rec.text)}"
+            )
 
         # No empty prose chunks
         if rec.type == "chunk" and not (rec.text or "").strip():

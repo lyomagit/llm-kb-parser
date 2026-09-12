@@ -1,8 +1,6 @@
 """Tests for structure-aware record builder."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from kbparser.model import Block, Document, Parse, Section, Source, Table, TableCell
@@ -16,7 +14,6 @@ from kbparser.validation import validate
 from .fixtures_gen.build_docx import build_basic as build_docx
 from .fixtures_gen.build_pdf import build_basic as build_pdf
 from .fixtures_gen.build_xlsx import build_basic as build_xlsx
-
 
 # ----- helpers -----
 
@@ -364,3 +361,22 @@ def test_docx_table_linked_via_last_chunk(docx_doc):
     assert chunks_with_table
     assert all(r.section_title in ("Materials", "Introduction", "Methods", "Conclusion")
                for r in chunks_with_table)
+
+
+def test_large_table_records_repeat_headers_and_keep_every_row():
+    table = Table(id="tbl_big", columns=["Key", "Value"], rows=[
+        [TableCell(row=0, col=0, text="Key"), TableCell(row=0, col=1, text="Value")],
+        *[[TableCell(row=i, col=0, text=f"item-{i:03d}"),
+           TableCell(row=i, col=1, text="Data " * 8)] for i in range(1, 101)],
+    ])
+    doc = Document(id="doc_x", source=_src(), parse=_parse_obj(), tables=[table])
+    records = [r for r in build_records(doc, max_chars=300) if r.type == "table"]
+    assert len(records) > 1
+    assert all(r.char_count <= 300 and r.text.startswith("Key | Value\n") for r in records)
+    assert all(r.source_table_ids == [table.id] for r in records)
+    assert len({r.id for r in records}) == len(records)
+    assert [i for r in records for i in range(r.metadata["row_span"][0], r.metadata["row_span"][1] + 1)] == list(range(1, 101))
+    for i in range(1, 101):
+        assert sum(f"item-{i:03d}" in r.text for r in records) == 1
+    assert len(doc.tables[0].rows) == 101
+    validate(doc, records)

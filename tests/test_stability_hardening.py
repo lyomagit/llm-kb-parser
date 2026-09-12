@@ -11,7 +11,6 @@ from kbparser.versioning import PACKAGE_VERSION, RECORDS_VERSION, SCHEMA_VERSION
 from .fixtures_gen.build_docx import build_basic as build_docx
 
 
-
 def test_build_source_and_parse_keeps_finished_at_equal_to_started_at_until_finalize(tmp_path):
     sample = tmp_path / "sample.docx"
     sample.write_bytes(b"PK\x03\x04" + b"0" * 128)
@@ -41,7 +40,6 @@ def test_docx_parser_finalizes_parse_metadata(tmp_path):
 
 
 
-from kbparser.versioning import PACKAGE_VERSION, RECORDS_VERSION, SCHEMA_VERSION
 
 
 def _doc() -> Document:
@@ -64,7 +62,7 @@ def _doc() -> Document:
 
 
 def test_parser_versions_match_package_version():
-    assert PACKAGE_VERSION == __version__
+    assert __version__ == PACKAGE_VERSION
     assert DOCParser.version == PACKAGE_VERSION
     assert DOCXParser.version == PACKAGE_VERSION
     assert ExcelParser.version == PACKAGE_VERSION

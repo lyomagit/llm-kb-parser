@@ -19,7 +19,6 @@ from kbparser.validation import validate
 
 from .fixtures_gen.build_scanned_pdf import build_basic as build_scanned
 
-
 TESSERACT = find_tesseract()
 
 
@@ -127,3 +126,9 @@ def test_text_lite_profile_skips_ocr(scanned_pdf: Path):
         and (w.scope or {}).get("pages")
         for w in d.warnings
     )
+
+
+def test_text_lite_scan_reports_unextracted_page(scanned_pdf: Path):
+    doc = _parse(scanned_pdf, profile="text-lite")
+    assert any(w.code == "ocr_skipped_by_profile" and w.scope == {"pages_missing_ocr": [1]}
+               for w in doc.warnings)

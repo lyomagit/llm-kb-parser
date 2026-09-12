@@ -15,10 +15,11 @@ import re
 from collections import defaultdict
 
 from ..ids import record_id
-from ..model import Block, Document, Record, Section, Sheet, Table
+from ..model import Block, Document, Record, RecordType, Section, Table
+from ..normalize.tables import table_content
 
 DEFAULT_MAX_CHARS = 1200  # retrieval-oriented chunk budget
-DEFAULT_POLICY = "v1"
+DEFAULT_POLICY = "v2"
 _CHARS_PER_TOKEN = 4
 _REFERENCE_RE = re.compile(r"^\[\d+\]")
 _URL_RE = re.compile(r"https?://")
@@ -35,7 +36,7 @@ def build_records(
         records.extend(_records_from_sheets(doc, policy))
     else:
         records.extend(_records_from_sections(doc, policy, max_chars))
-    records.extend(_records_from_tables(doc, policy))
+    records.extend(_records_from_tables(doc, policy, max_chars))
     return records
 
 
@@ -128,7 +129,7 @@ def _records_from_block_group(
     blocks: list[Block],
     policy: str,
     max_chars: int,
-    record_type: str,
+    record_type: RecordType,
     *,
     heading_block: Block | None = None,
     include_heading: bool = False,
@@ -146,7 +147,7 @@ def _records_from_block_group(
         node_ids: list[str] = [sec.id]
         seen: set[str] = {sec.id}
 
-        def _add_node(nid: str):
+        def _add_node(nid: str, seen=seen, node_ids=node_ids):
             if nid and nid not in seen:
                 node_ids.append(nid)
                 seen.add(nid)
@@ -203,9 +204,7 @@ def _is_reference_like(block: Block) -> bool:
         return False
     if _REFERENCE_RE.match(text):
         return True
-    if len(text) < 300 and _URL_RE.search(text):
-        return True
-    return False
+    return bool(len(text) < 300 and _URL_RE.search(text))
 
 
 def _is_diagram_like(block: Block) -> bool:
@@ -252,9 +251,7 @@ def _split_body(blocks: list[Block], max_chars: int) -> list[list[Block]]:
     for b in work:
         text_len = len(b.text or "") + 2
         boundary = prev_type is not None and prev_type != b.type
-        if current_chars + text_len > max_chars and current:
-            flush()
-        elif boundary and current_chars > max_chars * 0.7:
+        if current_chars + text_len > max_chars and current or boundary and current_chars > max_chars * 0.7:
             flush()
         current.append(b)
         current_chars += text_len
@@ -350,51 +347,50 @@ def _section_summary_seed(
 
 # ----- tables -----
 
-def _records_from_tables(doc: Document, policy: str) -> list[Record]:
+def _records_from_tables(doc: Document, policy: str, max_chars: int) -> list[Record]:
     out: list[Record] = []
     for t in doc.tables:
-        text = _linearize_table(t)
+        headers, rows = table_content(t)
+        prefix = "\n".join(s for s in [t.title, " | ".join(headers) if any(headers) else None] if s)
+        groups: list[list[tuple[int, str]]] = []
+        group: list[tuple[int, str]] = []
+        size = len(prefix)
+        for row_index, values in rows:
+            line = " | ".join(values)
+            if group and size + len(line) + 1 > max_chars:
+                groups.append(group)
+                group, size = [], len(prefix)
+            group.append((row_index, line))
+            size += len(line) + 1
+        if group or not groups:
+            groups.append(group)
         lineage = [t.id] + ([t.section_id] if t.section_id else [])
-        out.append(Record(
-            id=record_id(doc.id, "table", lineage, policy),
-            type="table",
-            document_id=doc.id,
-            text=text,
-            char_count=len(text) if text else 0,
-            token_estimate=max(1, (len(text) // _CHARS_PER_TOKEN) if text else 1),
-            section_title=_section_title(doc, t.section_id),
-            page_span=[t.page, t.page] if t.page is not None else None,
-            sheet_name=t.sheet,
-            source_node_ids=[sid for sid in [t.section_id] if sid],
-            source_table_ids=[t.id],
-            metadata={
-                "rows": len(t.rows),
-                "cols": len(t.columns),
-                "has_formula": any(c.formula for row in t.rows for c in row),
-                "policy": policy,
-            },
-        ))
+        for index, group in enumerate(groups):
+            text = "\n".join(s for s in [prefix, *(line for _, line in group)] if s).strip()
+            out.append(Record(
+                id=record_id(doc.id, "table", lineage + [f"seg{index}"], policy),
+                type="table",
+                document_id=doc.id,
+                text=text,
+                char_count=len(text) if text else 0,
+                token_estimate=max(1, (len(text) // _CHARS_PER_TOKEN) if text else 1),
+                section_title=_section_title(doc, t.section_id),
+                page_span=[t.page, t.page] if t.page is not None else None,
+                sheet_name=t.sheet,
+                source_node_ids=[sid for sid in [t.section_id] if sid],
+                source_table_ids=[t.id],
+                metadata={
+                    "rows": len(t.rows),
+                    "cols": len(t.columns),
+                    "has_formula": any(c.formula for row in t.rows for c in row),
+                    "policy": policy,
+                    "row_span": [group[0][0], group[-1][0]] if group else None,
+                    "segment_index": index,
+                    "segment_total": len(groups),
+                    "oversized_row": len(text) > max_chars,
+                },
+            ))
     return out
-
-
-def _linearize_table(t: Table) -> str:
-    lines: list[str] = []
-    if t.title:
-        lines.append(t.title)
-    start = 0
-    if t.columns and any(c for c in t.columns):
-        lines.append(" | ".join(t.columns))
-        if t.rows and _row_matches_columns(t.rows[0], t.columns):
-            start = 1
-    for row in t.rows[start:]:
-        texts = [(c.display_value or c.text or "") for c in row]
-        lines.append(" | ".join(texts))
-    return "\n".join(lines).strip()
-
-
-def _row_matches_columns(row, columns) -> bool:
-    texts = [(c.text or "") for c in row]
-    return texts == list(columns)
 
 
 def _section_title(doc: Document, section_id: str | None) -> str | None:

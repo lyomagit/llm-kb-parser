@@ -9,7 +9,6 @@ import pytest
 from kbparser.cli import main
 from kbparser.dispatcher import dispatch
 from kbparser.export import to_output
-from kbparser.parsers.base import ParseContext
 from kbparser.records import build_records
 
 from .fixtures_gen.build_docx import build_basic as build_docx
@@ -35,7 +34,6 @@ def _strip_timestamps(d: dict) -> dict:
 def test_parse_determinism(tmp_path: Path, builder, fmt):
     """Parse same fixture twice, output must be identical (minus timestamps)."""
     fixture = builder(tmp_path / f"test.{fmt}")
-    ctx = ParseContext(path=fixture, profile="fidelity")
 
     doc1 = dispatch(fixture, profile="fidelity")
     records1 = build_records(doc1)

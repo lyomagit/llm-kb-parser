@@ -13,19 +13,21 @@ from typing import Any
 _MAGIC_ZIP = b"PK\x03\x04"
 _MAGIC_OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _SUPPORTED_FORMATS = ("xls", "xlsx")
+_OFFICE_ENGINE_PACKAGE = "com.lyomagit.kbparser.officeengine"
+_OFFICE_ENGINE_ACTION = "com.lyomagit.kbparser.officeengine.CONVERT"
 
 _DISABLED_FORMATS: dict[str, dict[str, str]] = {
     "doc": {
-        "reason": "LibreOffice is not bundled on Android",
-        "replacement": "convert to DOCX/XLSX/PDF before import",
+        "reason": "LibreOffice is provided by the Android office companion",
+        "replacement": "Android office companion conversion",
     },
     "docx": {
-        "reason": "DOCX mobile backend is pending dependency validation",
-        "replacement": "lightweight OOXML extractor or verified python-docx path",
+        "reason": "DOCX mobile backend is delegated to the Android office companion",
+        "replacement": "Android office companion conversion",
     },
     "pdf": {
         "reason": "desktop PDF parser requires PyMuPDF",
-        "replacement": "Android PDF backend without PyMuPDF hard dependency",
+        "replacement": "Android office companion conversion",
     },
     "ocr": {
         "reason": "pytesseract requires an external Tesseract executable",
@@ -39,11 +41,24 @@ def android_capabilities_json() -> str:
     return _json({
         "supported_formats": list(_SUPPORTED_FORMATS),
         "disabled_formats": _DISABLED_FORMATS,
+        "external_engines": {
+            "office": {
+                "package": _OFFICE_ENGINE_PACKAGE,
+                "contract_action": _OFFICE_ENGINE_ACTION,
+                "source": "CollaboraOnline/online fork",
+                "role": "DOC/DOCX/PDF/RTF conversion through LibreOfficeKit",
+            },
+        },
         "python_entrypoint": "kbparser.mobile.facade.parse_path_json",
     })
 
 
-def parse_path_json(path: str, profile: str = "balanced") -> str:
+def parse_path_json(
+    path: str,
+    profile: str = "balanced",
+    original_source_name: str | None = None,
+    original_source_format: str | None = None,
+) -> str:
     """Parse an Android-cache file path and return a JSON string.
 
     Android code should copy the user-selected content URI into app-private
@@ -74,7 +89,13 @@ def parse_path_json(path: str, profile: str = "balanced") -> str:
         })
 
     try:
-        return _json(_parse_excel(source, fmt, profile))
+        return _json(_parse_excel(
+            source,
+            fmt,
+            profile,
+            original_source_name=original_source_name,
+            original_source_format=original_source_format,
+        ))
     except Exception as exc:
         return _json({
             "status": "failed",
@@ -82,6 +103,24 @@ def parse_path_json(path: str, profile: str = "balanced") -> str:
             "file": str(source),
             "message": f"{type(exc).__name__}: {exc}",
         })
+
+
+def parse_path_markdown(
+    path: str,
+    profile: str = "balanced",
+    original_source_name: str | None = None,
+    original_source_format: str | None = None,
+) -> str:
+    """Parse an Android-cache file path and return human-readable Markdown."""
+    payload = json.loads(parse_path_json(
+        path,
+        profile=profile,
+        original_source_name=original_source_name,
+        original_source_format=original_source_format,
+    ))
+    if payload.get("status") != "success":
+        return _error_markdown(payload)
+    return _excel_markdown(payload)
 
 
 def _detect_android_format(path: Path) -> str:
@@ -101,11 +140,15 @@ def _detect_android_format(path: Path) -> str:
     return ext or "unknown"
 
 
-def _parse_excel(path: Path, fmt: str, profile: str) -> dict[str, Any]:
-    if fmt == "xlsx":
-        sheets = _parse_xlsx(path)
-    else:
-        sheets = _parse_xls(path)
+def _parse_excel(
+    path: Path,
+    fmt: str,
+    profile: str,
+    *,
+    original_source_name: str | None = None,
+    original_source_format: str | None = None,
+) -> dict[str, Any]:
+    sheets = _parse_xlsx(path) if fmt == "xlsx" else _parse_xls(path)
     records = [
         {
             "type": "sheet_summary",
@@ -117,16 +160,22 @@ def _parse_excel(path: Path, fmt: str, profile: str) -> dict[str, Any]:
         }
         for sheet in sheets
     ]
+    source = {
+        "path": str(path),
+        "filename": original_source_name or path.name,
+        "size_bytes": path.stat().st_size,
+    }
+    if original_source_name:
+        source["converted_filename"] = path.name
+    if original_source_format:
+        source["original_format"] = original_source_format
+
     return {
         "status": "success",
         "format": fmt,
         "backend": "mobile-lightweight-excel",
         "profile": profile,
-        "source": {
-            "path": str(path),
-            "filename": path.name,
-            "size_bytes": path.stat().st_size,
-        },
+        "source": source,
         "sheets": sheets,
         "records": records,
     }
@@ -206,3 +255,94 @@ def _cell_json(value):
 
 def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _excel_markdown(payload: dict[str, Any]) -> str:
+    source = payload.get("source", {})
+    title = _clean_text(source.get("filename") or "selected-document")
+    lines: list[str] = [
+        f"# {title}",
+        "",
+        f"- Format: `{payload.get('format', 'unknown')}`",
+        f"- Backend: `{payload.get('backend', 'unknown')}`",
+        f"- Profile: `{payload.get('profile', 'balanced')}`",
+        "",
+    ]
+
+    for sheet in payload.get("sheets", []):
+        lines.extend([
+            f"## Sheet: {_clean_text(sheet.get('name') or 'Sheet')}",
+            "",
+            (
+                f"- Size: {sheet.get('rows', 0)} rows x "
+                f"{sheet.get('columns', 0)} columns"
+            ),
+            f"- Non-empty cells: {sheet.get('non_empty_cells', 0)}",
+            "",
+        ])
+        preview_rows = sheet.get("preview_rows") or []
+        if preview_rows:
+            lines.extend(_preview_table(preview_rows))
+            lines.append("")
+
+    return _normalize_blank_lines(lines).rstrip() + "\n"
+
+
+def _error_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        "# Parse failed",
+        "",
+        f"- Status: `{payload.get('status', 'failed')}`",
+    ]
+    if payload.get("format"):
+        lines.append(f"- Format: `{payload['format']}`")
+    if payload.get("message"):
+        lines.append(f"- Message: {_clean_text(payload['message'])}")
+    if payload.get("replacement"):
+        lines.append(f"- Replacement: {_clean_text(payload['replacement'])}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _preview_table(rows: list[list[Any]]) -> list[str]:
+    width = max((len(row) for row in rows), default=0)
+    if width == 0:
+        return []
+    header = ["Row"] + [f"Column {index + 1}" for index in range(width)]
+    lines = [
+        "| " + " | ".join(_escape_table_cell(value) for value in header) + " |",
+        "| " + " | ".join("---" for _ in header) + " |",
+    ]
+    for row_index, row in enumerate(rows, start=1):
+        values = [_cell_text(value) for value in row]
+        values.extend([""] * (width - len(values)))
+        lines.append(
+            "| "
+            + " | ".join(_escape_table_cell(value) for value in [str(row_index), *values])
+            + " |"
+        )
+    return lines
+
+
+def _cell_text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _clean_text(value: Any) -> str:
+    return str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _escape_table_cell(value: Any) -> str:
+    return _clean_text(value).replace("|", "\\|").replace("\n", "<br>")
+
+
+def _normalize_blank_lines(lines: list[str]) -> str:
+    normalized: list[str] = []
+    previous_blank = False
+    for line in lines:
+        blank = line == ""
+        if blank and previous_blank:
+            continue
+        normalized.append(line)
+        previous_blank = blank
+    return "\n".join(normalized)

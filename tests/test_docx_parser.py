@@ -93,6 +93,7 @@ def test_table_linked_to_materials_section(basic_docx: Path):
 def test_root_section_fallback_when_no_heading_styles(tmp_path: Path):
     """DOCX without Word heading styles should still produce records."""
     from docx import Document as DocxDoc
+
     from kbparser.records import build_records
 
     # Build a DOCX with only 'Normal' styled paragraphs — no Heading styles.
@@ -122,3 +123,24 @@ def test_root_section_fallback_when_no_heading_styles(tmp_path: Path):
     chunks = [r for r in records if r.type == "chunk"]
     combined = " ".join(r.text for r in chunks if r.text)
     assert "учетной политики" in combined.lower() or "Общие положения" in combined
+
+
+def test_preamble_and_table_before_first_heading_keep_section_and_records(tmp_path: Path):
+    from docx import Document as DocxDoc
+
+    from kbparser.records import build_records
+
+    source = DocxDoc()
+    source.add_paragraph("Important introductory conditions.")
+    source.add_table(rows=1, cols=1).cell(0, 0).text = "Introductory table"
+    source.add_heading("Details", 1)
+    source.add_paragraph("Detailed explanation.")
+    path = tmp_path / "preamble.docx"
+    source.save(path)
+    doc = _parse(path)
+    records = build_records(doc)
+    assert all(block.section_id for block in doc.blocks)
+    assert doc.tables[0].section_id == doc.sections[0].id
+    assert doc.sections[-1].title == "Details"
+    assert any("Important introductory conditions." in (r.text or "") for r in records)
+    validate(doc, records)

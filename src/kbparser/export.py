@@ -138,7 +138,11 @@ def _render_sections(lines: list[str], doc: Document, rendered_tables: set[str])
     for section in doc.sections:
         title = section.title or "Untitled section"
         level = min(max(section.level + 1, 2), 6)
-        _append_heading(lines, level, title)
+        display_title = title
+        if doc.metadata.get("page_sections") and section.page_start is not None:
+            page_title = f"Страница {section.page_start}"
+            display_title = page_title if title == page_title else f"{page_title} — {title}"
+        _append_heading(lines, level, display_title)
         blocks = [blocks_by_id[b] for b in section.block_ids if b in blocks_by_id]
         if not blocks:
             blocks = [b for b in doc.blocks if b.section_id == section.id]

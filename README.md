@@ -63,6 +63,11 @@ collisions receive stable suffixes, and writes use atomic replacement. Derived
 table records contain row spans and repeat headers across row groups. A single
 row larger than the record budget stays intact and is marked `oversized_row`.
 
+Version 0.3.1 excludes filled backgrounds from PDF table detection and keeps
+the original text if a table candidate loses characters. Widescreen PDFs
+retain page boundaries, numeric callouts remain searchable, and OCR avoids
+duplicating text already present in the PDF layer.
+
 macOS builds require Tcl/Tk 8.6.13 or newer. Tk 8.6.12 can ignore input until
 the window moves ([CPython #110218](https://github.com/python/cpython/issues/110218)).
 The build validates its toolkit and writes the actual package version into

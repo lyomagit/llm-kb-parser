@@ -132,3 +132,31 @@ def test_text_lite_scan_reports_unextracted_page(scanned_pdf: Path):
     doc = _parse(scanned_pdf, profile="text-lite")
     assert any(w.code == "ocr_skipped_by_profile" and w.scope == {"pages_missing_ocr": [1]}
                for w in doc.warnings)
+
+
+def test_ocr_does_not_duplicate_or_replace_existing_native_text(monkeypatch, tmp_path: Path):
+    import fitz
+
+    from kbparser.parsers import pdf as pdf_mod
+    from kbparser.parsers.ocr import OCRResult
+
+    path = tmp_path / "mixed.pdf"
+    with fitz.open() as source:
+        page = source.new_page()
+        page.insert_text((50, 70), "Native title", fontsize=20)
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 10, 10), False)
+        pix.clear_with(255)
+        page.insert_image(fitz.Rect(50, 150, 300, 300), pixmap=pix)
+        source.save(path)
+    monkeypatch.setattr(pdf_mod, "find_tesseract", lambda: "/fake/tesseract")
+    monkeypatch.setattr(pdf_mod, "ocr_page", lambda *args, **kwargs: [
+        OCRResult("NATIVE TlTLE", (50, 48, 160, 77)),
+        OCRResult("Native title", (50, 48, 500, 77)),
+        OCRResult("Image-only text", (50, 170, 250, 190)),
+    ])
+    doc = _parse(path)
+    text = " ".join(b.text or "" for b in doc.blocks)
+    assert "Native title" in text
+    assert text.count("Native title") == 1
+    assert "NATIVE TlTLE" not in text
+    assert "Image-only text" in text

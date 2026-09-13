@@ -1,25 +1,16 @@
-"""PDF parser — phase 5.
+"""PDF text, ruled tables, and optional OCR with source-text preservation.
 
-Strategy (no OCR — that's phase 7):
-- pymupdf (fitz) for per-page text blocks with font + bbox.
-- pdfplumber for ruled table extraction.
-- Heuristics:
-  * Text-layer quality: total chars per page. If a page has ~zero text but
-    contains images, emit `scanned_pdf_no_ocr` warning.
-  * Header/footer: repeating normalized text in top/bottom margin zones
-    across pages → filter + annotate.
-  * Heading inference: dominant body font size via mode; blocks with span
-    size > body * 1.15 and short text become heading candidates. Unique
-    heading sizes are ranked desc into levels 1..N.
-  * Section tree: push/pop on heading level while walking reading order.
-  * Tables: pdfplumber `find_tables()`; spans that fall inside a table bbox
-    are removed from the block list to avoid duplication.
+Only painted borders define table grids. A lossy table candidate must not
+replace embedded text. Widescreen pages get independent sections so numeric
+callouts do not become document-wide headings.
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -103,15 +94,22 @@ class PDFParser:
                 scope={"pages_missing_ocr": ocr.disabled_pages},
             ))
 
-        pdfplumber_tables = _extract_pdfplumber_tables(ctx.path, cancelled=ctx.cancelled)
-
-        _classify_header_footer(raw_pages)
-        body_size = _dominant_body_size(raw_pages)
-        _assign_heading_levels(raw_pages, body_size)
+        pdfplumber_tables = _extract_pdfplumber_tables(
+            ctx.path, cancelled=ctx.cancelled, native_pages=raw_pages, warnings=warnings,
+        )
         _strip_spans_inside_tables(raw_pages, pdfplumber_tables)
+        page_sections = len(raw_pages) > 1 and all(p.width >= 1.6 * p.height for p in raw_pages)
+        if page_sections:
+            metadata["page_sections"] = True
+            for page in raw_pages:
+                page.blocks = _split_slide_columns(page)
+        else:
+            _classify_header_footer(raw_pages)
+            body_size = _dominant_body_size(raw_pages)
+            _assign_heading_levels(raw_pages, body_size)
 
         state = _BuildState(document_id=did)
-        if raw_pages and not any(b.role == "heading" for p in raw_pages for b in p.blocks):
+        if raw_pages and not page_sections and not any(b.role == "heading" for p in raw_pages for b in p.blocks):
             fallback_title = str(metadata.get("title") or ctx.path.stem)
             state.push(1, fallback_title, raw_pages[0].number)
 
@@ -120,6 +118,13 @@ class PDFParser:
 
         for page in raw_pages:
             check_cancelled(ctx.cancelled)
+            title_block = _page_title_block(page) if page_sections else None
+            if page_sections:
+                title = title_block.text if title_block else f"Страница {page.number}"
+                state.push(1, title, page.number)
+                for block in page.blocks:
+                    block.role = "heading" if block is title_block else "body"
+                    block.heading_level = 1 if block is title_block else None
             page_tables = pdfplumber_tables.get(page.number, [])
             page_out = Page(
                 page_number=page.number,
@@ -134,12 +139,20 @@ class PDFParser:
             for ti, tdata in enumerate(page_tables):
                 items.append((tdata["bbox"], "table", (ti, tdata)))
 
-            for _, kind, payload in _reading_order(items, page.width):
+            if page_sections:
+                title_items = [item for item in items if item[1] == "block" and item[2] is title_block]
+                footer_items = [item for item in items if item[1] == "block"
+                                and item[2].text.strip() == str(page.number) and item[0][1] > page.height * 0.85]
+                body_items = [item for item in items if item not in title_items and item not in footer_items]
+                ordered = title_items + _reading_order(body_items, page.width) + footer_items
+            else:
+                ordered = _reading_order(items, page.width)
+            for _, kind, payload in ordered:
                 if not state.sections and (kind == "table" or payload.role != "heading"):
                     state.push(1, str(metadata.get("title") or ctx.path.stem), page.number)
                 if kind == "block":
                     blk = payload  # type: ignore[assignment]
-                    _emit_block(state, blk, page_out)
+                    _emit_block(state, blk, page_out, infer_sections=not page_sections)
                 else:
                     ti, tdata = payload
                     tbl = _build_pdf_table(did, state, tdata, page.number, ti)
@@ -177,6 +190,7 @@ class _Span:
     size: float
     font: str
     bbox: tuple[float, float, float, float]
+    line: int = 0
 
 
 @dataclass
@@ -224,7 +238,7 @@ def _extract_pymupdf(path: Path, warnings: list[Warning], *, cancelled=None) -> 
                     continue
                 spans: list[_Span] = []
                 texts: list[str] = []
-                for line in block.get("lines", []):
+                for line_number, line in enumerate(block.get("lines", [])):
                     line_parts: list[str] = []
                     for span in line.get("spans", []):
                         t = span.get("text", "")
@@ -235,6 +249,7 @@ def _extract_pymupdf(path: Path, warnings: list[Warning], *, cancelled=None) -> 
                             size=float(span.get("size", 0.0)),
                             font=str(span.get("font", "")),
                             bbox=tuple(span.get("bbox", (0, 0, 0, 0))),  # type: ignore[arg-type]
+                            line=line_number,
                         ))
                         line_parts.append(t)
                     if line_parts:
@@ -314,9 +329,19 @@ def _maybe_ocr(
                 summary.empty_pages.append(p.number)
                 continue
             added_text = False
+            native_spans = [s for block in p.blocks for s in block.spans]
+            native_text = {_compact_text(block.text) for block in p.blocks}
             for r in results:
                 text = r.text.strip()
                 if not text:
+                    continue
+                area = max(0, r.bbox[2] - r.bbox[0]) * max(0, r.bbox[3] - r.bbox[1])
+                overlap = sum(
+                    max(0, min(r.bbox[2], s.bbox[2]) - max(r.bbox[0], s.bbox[0]))
+                    * max(0, min(r.bbox[3], s.bbox[3]) - max(r.bbox[1], s.bbox[1]))
+                    for s in native_spans
+                )
+                if area and (overlap >= area * 0.5 or overlap > 0 and _compact_text(text) in native_text):
                     continue
                 p.blocks.append(_PdfBlock(
                     text=text,
@@ -328,7 +353,8 @@ def _maybe_ocr(
                 p.total_chars += len(text)
                 added_text = True
             if not added_text:
-                summary.empty_pages.append(p.number)
+                if not p.total_chars:
+                    summary.empty_pages.append(p.number)
                 continue
             p.blocks.sort(key=lambda b: (round(b.bbox[1], 1), round(b.bbox[0], 1)))
             summary.applied_pages.append(p.number)
@@ -420,15 +446,36 @@ def _assign_heading_levels(pages: list[_PdfPage], body_size: float) -> None:
 
 # ----- tables via pdfplumber -----
 
-def _extract_pdfplumber_tables(path: Path, *, cancelled=None) -> dict[int, list[dict]]:
+def _compact_text(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKC", text).casefold()
+                   if not c.isspace() and c != "\u00ad")
+
+
+def _text_chars(text: str) -> Counter:
+    return Counter(_compact_text(text))
+
+
+def _inside(box: Sequence[float], outer: Sequence[float], tolerance: float = 2) -> bool:
+    return (outer[0] - tolerance <= box[0] <= box[2] <= outer[2] + tolerance
+            and outer[1] - tolerance <= box[1] <= box[3] <= outer[3] + tolerance)
+
+
+def _extract_pdfplumber_tables(
+    path: Path, *, cancelled=None, native_pages: list[_PdfPage] | None = None,
+    warnings: list[Warning] | None = None,
+) -> dict[int, list[dict]]:
     out: dict[int, list[dict]] = {}
+    native = {p.number: p for p in native_pages or []}
     with pdfplumber.open(str(path)) as pdf:
         for i, page in enumerate(pdf.pages):
             check_cancelled(cancelled)
             page_no = i + 1
             entries: list[dict] = []
             try:
-                found = page.find_tables()
+                # Filled slide backgrounds and clipping rectangles are not grid borders.
+                ruled = page.filter(lambda obj: obj.get("object_type") not in {"rect", "curve", "line"}
+                                    or obj.get("stroke", False))
+                found = ruled.find_tables()
             except Exception:
                 found = []
             for tbl in found:
@@ -439,6 +486,23 @@ def _extract_pdfplumber_tables(path: Path, *, cancelled=None) -> dict[int, list[
                 if not rows:
                     continue
                 bbox = tuple(tbl.bbox)
+                expected = ""
+                if page_no in native:
+                    for block in native[page_no].blocks:
+                        for span in block.spans:
+                            cx, cy = (span.bbox[0] + span.bbox[2]) / 2, (span.bbox[1] + span.bbox[3]) / 2
+                            if _inside((cx, cy, cx, cy), bbox):
+                                expected += span.text
+                actual = "".join(cell or "" for row in rows for cell in row)
+                missing = _text_chars(expected) - _text_chars(actual)
+                if missing:
+                    if warnings is not None:
+                        warnings.append(Warning(
+                            code="table_structure_uncertain",
+                            message="Table extraction omitted source text; original text blocks preserved instead.",
+                            scope={"page": page_no, "bbox": list(bbox), "missing_chars": sum(missing.values())},
+                        ))
+                    continue
                 entries.append({"bbox": bbox, "rows": rows})
             if entries:
                 out[page_no] = entries
@@ -454,18 +518,58 @@ def _strip_spans_inside_tables(
             continue
         kept: list[_PdfBlock] = []
         for b in p.blocks:
-            cx = (b.bbox[0] + b.bbox[2]) / 2
-            cy = (b.bbox[1] + b.bbox[3]) / 2
-            inside = any(
-                tb[0] - 2 <= cx <= tb[2] + 2 and tb[1] - 2 <= cy <= tb[3] + 2
-                for tb in tbl_boxes
-            )
-            if not inside:
+            spans = [s for s in b.spans if not any(_inside(s.bbox, box) for box in tbl_boxes)]
+            if len(spans) == len(b.spans):
                 kept.append(b)
+            elif spans:
+                kept.append(_block_from_spans(b, spans))
         p.blocks = kept
 
 
 # ----- build phase -----
+
+def _block_from_spans(block: _PdfBlock, spans: list[_Span]) -> _PdfBlock:
+    lines: dict[int, list[str]] = {}
+    for span in spans:
+        lines.setdefault(span.line, []).append(span.text)
+    text = " ".join("".join(parts) for parts in lines.values()).strip()
+    box = (min(s.bbox[0] for s in spans), min(s.bbox[1] for s in spans),
+           max(s.bbox[2] for s in spans), max(s.bbox[3] for s in spans))
+    return replace(block, text=text, bbox=box, spans=spans,
+                   dominant_size=Counter(s.size for s in spans).most_common(1)[0][0],
+                   is_bold=any("bold" in s.font.lower() for s in spans))
+
+
+def _split_slide_columns(page: _PdfPage) -> list[_PdfBlock]:
+    result: list[_PdfBlock] = []
+    for block in page.blocks:
+        sizes = [s.size for s in block.spans]
+        if len(sizes) < 2 or max(sizes) > min(sizes) * 1.2:
+            result.append(block)
+            continue
+        groups: list[list[_Span]] = []
+        right: float | None = None
+        for span in sorted(block.spans, key=lambda s: s.bbox[0]):
+            if right is None or span.bbox[0] - right > max(16, page.width * 0.04):
+                groups.append([])
+            groups[-1].append(span)
+            right = max(right, span.bbox[2]) if right is not None else span.bbox[2]
+        if len(groups) == 1:
+            result.append(block)
+        else:
+            for group in groups:
+                result.append(_block_from_spans(block, [s for s in block.spans if s in group]))
+    return result
+
+def _page_title_block(page: _PdfPage) -> _PdfBlock | None:
+    candidates = [b for b in page.blocks if len(b.text) <= 240 and sum(c.isalpha() for c in b.text) >= 4]
+    top = [b for b in candidates if b.bbox[1] < page.height * 0.25]
+    ranked = [(max((s.size for s in b.spans if any(c.isalpha() for c in s.text)), default=b.dominant_size), b)
+              for b in top or candidates]
+    if not ranked:
+        return None
+    minimum_size = max(size for size, _ in ranked) * 0.6
+    return min((b for size, b in ranked if size >= minimum_size), key=lambda b: (b.bbox[1], b.bbox[0]))
 
 def _reading_order(items: list[tuple], width: float) -> list[tuple]:
     """Read clear, overlapping columns between full-width content bands."""
@@ -474,13 +578,16 @@ def _reading_order(items: list[tuple], width: float) -> list[tuple]:
 
     def columns(band: list[tuple]) -> list[tuple]:
         groups: list[list[tuple]] = []
-        right = 0.0
+        left: float | None = None
         for item in sorted(band, key=lambda value: value[0][0]):
-            if not groups or item[0][0] - right > max(12, width * 0.025):
+            if left is None or item[0][0] - left > max(24, width * 0.15):
                 groups.append([])
+                left = item[0][0]
             groups[-1].append(item)
-            right = max(right, item[0][2])
-        if len(groups) < 2 or any(len(group) < 2 for group in groups):
+        if len(groups) < 2:
+            return row_order(band)
+        if any(max(item[0][2] for item in group) - min(item[0][0] for item in group) < width * 0.15
+               for group in groups):
             return row_order(band)
         # Separate indentation levels are not parallel columns.
         top = max(min(item[0][1] for item in group) for group in groups)
@@ -567,10 +674,11 @@ class _BuildState:
         page_out.block_ids.append(blk.id)
 
 
-def _emit_block(state: _BuildState, blk: _PdfBlock, page_out: Page) -> None:
+def _emit_block(state: _BuildState, blk: _PdfBlock, page_out: Page, *, infer_sections: bool = True) -> None:
     style = {"font_size": blk.dominant_size, "bold": blk.is_bold}
     if blk.role == "heading" and blk.heading_level is not None:
-        state.push(blk.heading_level, blk.text.strip(), page_out.page_number)
+        if infer_sections:
+            state.push(blk.heading_level, blk.text.strip(), page_out.page_number)
         b = state.add_block("heading", blk.text, page_out.page_number, blk.bbox, style)
     else:
         b = state.add_block("paragraph", blk.text, page_out.page_number, blk.bbox, style)
